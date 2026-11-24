@@ -146,7 +146,7 @@ func (s *server) routes(e *echo.Echo) {
 		}
 		return s.list(c, "SELECT u.*, (SELECT count(*) FROM test_results r WHERE r.test_run_id=u.id) AS result_count FROM test_runs u WHERE app_id=$1 ORDER BY started_at DESC,id DESC", app)
 	})
-	e.POST("/api/apps/:app/runs", s.createRun)
+	e.POST("/api/apps/:app/runs", s.createRun, s.idempotency)
 	e.GET("/api/runs/:id", func(c echo.Context) error {
 		v, err := id(c, "id")
 		if err != nil {
@@ -181,7 +181,7 @@ func (s *server) routes(e *echo.Echo) {
 		})
 	}
 	e.POST("/api/results/:id/restore/:history", s.restoreResult)
-	e.POST("/api/results/:id/attachments", s.upload)
+	e.POST("/api/results/:id/attachments", s.upload, s.idempotency)
 	e.GET("/api/attachments/:id", s.download)
 }
 func (s *server) saveCase(c echo.Context) error {

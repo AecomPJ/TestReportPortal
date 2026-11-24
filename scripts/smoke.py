@@ -65,4 +65,40 @@ class Workflow(unittest.TestCase):
         self.assertEqual(len(call(path+'/runs')),2)
         self.assertEqual(call(f'/cases/{cid}/history')[0]['action'],'deactivated')
         print(f"Validated app={app['id']}, case={cid}, runs={first['id']},{second['id']}")
+def send(path, data, headers, expected):
+    req=urllib.request.Request(BASE+path,method='POST',data=data,headers=headers)
+    try:
+        with urllib.request.urlopen(req,timeout=15) as r:
+            assert r.status==expected,(r.status,expected)
+            return json.load(r),r.headers
+    except urllib.error.HTTPError as e:
+        if e.code!=expected: raise AssertionError((e.code,e.read().decode())) from e
+        return json.load(e),e.headers
+class Idempotency(unittest.TestCase):
+    def test_idempotency_key(self):
+        app=call('/apps','POST',{'name':'Smoke '+uuid.uuid4().hex[:8]},201)
+        path=f"/apps/{app['id']}"
+        case=call(path+'/cases','POST',dict(case_key='IDEM-001',title='冪等',steps='開く',expected_result='表示',test_type='automated'),201)
+        key=uuid.uuid4().hex
+        body=json.dumps(dict(run_type='automated',case_ids=[case['id']])).encode()
+        h={'Content-Type':'application/json','Idempotency-Key':key}
+        first,_=send(path+'/runs',body,h,201)
+        again,headers=send(path+'/runs',body,h,201)
+        self.assertEqual(first['id'],again['id'])
+        self.assertEqual(headers.get('Idempotent-Replayed'),'true')
+        send(path+'/runs',json.dumps(dict(run_type='manual',case_ids=[case['id']])).encode(),h,409)
+        self.assertEqual(len(call(path+'/runs')),1)
+        failed=dict(h,**{'Idempotency-Key':uuid.uuid4().hex})
+        send(path+'/runs',json.dumps(dict(run_type='automated',case_ids=[])).encode(),failed,400)
+        send(path+'/runs',body,failed,201)  # failures do not consume the key
+        rid=call(f"/runs/{first['id']}")['results'][0]['id']
+        image=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=')
+        upload_key=uuid.uuid4().hex
+        ids=[]
+        for boundary in ('one','two'):  # retries may use a different boundary
+            raw=f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="screen.png"\r\nContent-Type: image/png\r\n\r\n'.encode()+image+f'\r\n--{boundary}--\r\n'.encode()
+            att,_=send(f'/results/{rid}/attachments',raw,{'Content-Type':'multipart/form-data; boundary='+boundary,'Idempotency-Key':upload_key},201)
+            ids.append(att['id'])
+        self.assertEqual(ids[0],ids[1])
+        self.assertEqual(len(call(f"/runs/{first['id']}")['results'][0]['attachments']),1)
 if __name__=='__main__':unittest.main(verbosity=2)
