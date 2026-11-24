@@ -182,6 +182,9 @@ func (s *server) routes(e *echo.Echo) {
 	}
 	e.POST("/api/results/:id/restore/:history", s.restoreResult)
 	e.POST("/api/results/:id/attachments", s.upload)
+	e.PUT("/api/runs/:run/results/by-key/:case_key", s.saveResultByKey)
+	e.PATCH("/api/runs/:run/results/by-key/:case_key", s.patchResultByKey)
+	e.POST("/api/runs/:run/results/by-key/:case_key/attachments", s.uploadByKey)
 	e.GET("/api/attachments/:id", s.download)
 }
 func (s *server) saveCase(c echo.Context) error {
@@ -336,13 +339,21 @@ func (s *server) createRun(c echo.Context) error {
 	return c.JSONBlob(201, run)
 }
 func (s *server) saveResult(c echo.Context) error {
+	key, err := id(c, "id")
+	if err != nil {
+		return err
+	}
 	var v resultInput
 	if e := decode(c, &v); e != nil {
 		return e
 	}
-	return s.updateResult(c, v, 0)
+	return s.updateResult(c, key, v, 0, nil)
 }
 func (s *server) restoreResult(c echo.Context) error {
+	key, e := id(c, "id")
+	if e != nil {
+		return e
+	}
 	h, e := id(c, "history")
 	if e != nil {
 		return e
@@ -354,13 +365,11 @@ func (s *server) restoreResult(c echo.Context) error {
 	if e = decode(c, &v); e != nil {
 		return e
 	}
-	return s.updateResult(c, resultInput{ChangedBy: v.ChangedBy, Reason: v.Reason}, h)
+	return s.updateResult(c, key, resultInput{ChangedBy: v.ChangedBy, Reason: v.Reason}, h, nil)
 }
-func (s *server) updateResult(c echo.Context, v resultInput, history int64) error {
-	key, err := id(c, "id")
-	if err != nil {
-		return err
-	}
+
+// updateResult writes a result inside a row lock. When patch is set, omitted fields keep the locked current values.
+func (s *server) updateResult(c echo.Context, key int64, v resultInput, history int64, patch *resultPatch) error {
 	ctx := c.Request().Context()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -372,6 +381,22 @@ func (s *server) updateResult(c echo.Context, v resultInput, history int64) erro
 		return err
 	}
 	action := "updated"
+	if patch != nil {
+		var cur resultInput
+		if e := json.Unmarshal(before, &cur); e != nil {
+			return e
+		}
+		v = resultInput{Status: cur.Status, Actual: cur.Actual, Comment: cur.Comment, ChangedBy: patch.ChangedBy, Reason: patch.Reason}
+		if patch.Status != nil {
+			v.Status = *patch.Status
+		}
+		if patch.Actual != nil {
+			v.Actual = *patch.Actual
+		}
+		if patch.Comment != nil {
+			v.Comment = *patch.Comment
+		}
+	}
 	if history > 0 {
 		b, e := object(ctx, tx, "SELECT after_data FROM edit_history WHERE id=$1 AND test_result_id=$2", history, key)
 		if e != nil {
@@ -408,6 +433,9 @@ func (s *server) upload(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.saveAttachment(c, key)
+}
+func (s *server) saveAttachment(c echo.Context, key int64) error {
 	f, err := c.FormFile("file")
 	if err != nil {
 		return echo.NewHTTPError(400, "画像ファイルを指定してください")
