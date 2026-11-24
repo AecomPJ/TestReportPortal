@@ -172,7 +172,15 @@ class Idempotency(unittest.TestCase):
             att,_=send(f'/results/{rid}/attachments',raw,{'Content-Type':'multipart/form-data; boundary='+boundary,'Idempotency-Key':upload_key},201)
             ids.append(att['id'])
         self.assertEqual(ids[0],ids[1])
-        self.assertEqual(len(call(f"/runs/{first['id']}")['results'][0]['attachments']),1)
+        # Field values containing separators must not collide with a different set of fields.
+        def form(fields):
+            parts=b''.join(f'--b\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode() for k,v in fields)
+            return parts+b'--b\r\nContent-Disposition: form-data; name="file"; filename="screen.png"\r\nContent-Type: image/png\r\n\r\n'+image+b'\r\n--b--\r\n'
+        mixed=uuid.uuid4().hex
+        hb={'Content-Type':'multipart/form-data; boundary=b','Idempotency-Key':mixed}
+        send(f'/results/{rid}/attachments',form([('caption','x'),('uploaded_by','y')]),hb,201)
+        send(f'/results/{rid}/attachments',form([('caption','x\nv:uploaded_by=y')]),hb,409)
+        self.assertEqual(len(call(f"/runs/{first['id']}")['results'][0]['attachments']),2)
 def upload(path, name, content, expected=201):
     raw=f'--ledger\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()+content+b'\r\n--ledger--\r\n'
     req=urllib.request.Request(BASE+path,data=raw,headers={'Content-Type':'multipart/form-data; boundary=ledger'})
