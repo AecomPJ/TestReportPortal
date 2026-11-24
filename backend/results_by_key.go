@@ -24,12 +24,17 @@ func (s *server) resultIDByKey(c echo.Context) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
+	// Keys are stored exactly as entered, so surrounding whitespace is significant and is not trimmed.
+	// Echo matches on RawPath when the URL contains escapes such as %2F; only then is the value still encoded.
 	key := c.Param("case_key")
-	if decoded, e := url.PathUnescape(key); e == nil {
+	if c.Request().URL.RawPath != "" {
+		decoded, e := url.PathUnescape(key)
+		if e != nil {
+			return 0, echo.NewHTTPError(400, "ケースの識別子のURLエンコードが不正です")
+		}
 		key = decoded
 	}
-	key = strings.TrimSpace(key)
-	if key == "" {
+	if strings.TrimSpace(key) == "" {
 		return 0, echo.NewHTTPError(400, "ケースの識別子を指定してください")
 	}
 	ctx := c.Request().Context()
