@@ -54,13 +54,36 @@ Homebrew の `ca-certificates` を使う場合は
 - ケースごとの過去履歴、実行開始日時による直近2回の比較
 - ケースの実行時スナップショット、ケース／結果の編集前後の追記履歴
 - 結果を履歴の状態に復元（復元操作も新たな履歴として記録）
-- PNG/JPEG/WebPの添付と表示（1枚10MB、複数枚可、ローカル永続ボリューム）
+- 画像（PNG/JPEG/WebP、10MB）の添付と表示、ログ等の添付（テキスト/JSON/XML 20MB、ZIP 50MB、MP4 100MB）とプレビュー・ダウンロード（複数可、ローカル永続ボリューム）
 - 一覧の検索、結果・方法による絞り込み、実行履歴の日付フィルター
 - DBヘルスチェック、DBと画像の永続化、バックアップ
 
-自動テストは構造化APIから登録できます。Maestro実行・専用レポート変換、Excel移行、
+自動テストは構造化API、AIエージェントはMCPサーバーから登録できます。Maestro実行・専用レポート変換、Excel移行、
 添付の削除や世代管理、Excel出力、認証は未実装です。テスト項目の復元は履歴を参照して手動編集します。
-画像以外のログファイルはまだアップロードできません。
+
+## AIエージェント連携（MCP）
+
+`mcp/` に Claude Code などから使う MCP サーバー（stdio）があります。
+実行回の作成 → 結果登録 → スクリーンショット・ログ添付 → 終了を、操作を絞ったツールで行えます。
+
+```sh
+cd mcp && go build -o ../.local/bin/ledger-mcp .
+```
+
+テストするプロジェクトの `.mcp.json` に追加します。
+
+```json
+{
+  "mcpServers": {
+    "test-report-portal": {
+      "command": "/path/to/TestReportPortal/.local/bin/ledger-mcp",
+      "env": { "LEDGER_URL": "http://127.0.0.1:3000", "LEDGER_ACTOR": "Claude Code" }
+    }
+  }
+}
+```
+
+ツール一覧・環境変数・添付を許可するディレクトリの設定は [docs/mcp.md](docs/mcp.md)。
 
 ## 開発
 
@@ -87,7 +110,7 @@ DBは起動前に利用可能にしておきます。標準ComposeはDB/APIの�
 python3 scripts/smoke.py
 ```
 
-起動済みのポート3000に対し、登録・スナップショット・比較・訂正・復元・画像添付・入力制約・
+起動済みのポート3000に対し、登録・スナップショット・比較・訂正・復元・画像・ログ添付・入力制約・
 アプリ間分離・無効化を検証します。専用の `Smoke ...` / `Other ...` アプリを追加します。
 既存データは削除しません。接続先変更は `LEDGER_URL` を指定してください。
 
@@ -122,4 +145,4 @@ docker compose up -d
 ```
 
 バックアップにはテスト結果・端末情報・画像が含まれます。保存先は運用に合わせて保護してください。
-APIの使い方は [docs/api.md](docs/api.md)。
+APIの使い方は [docs/api.md](docs/api.md)、MCPサーバーは [docs/mcp.md](docs/mcp.md)。
