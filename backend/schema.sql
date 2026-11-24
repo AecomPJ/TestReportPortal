@@ -39,3 +39,8 @@ CREATE INDEX IF NOT EXISTS runs_app_idx ON test_runs(app_id,started_at DESC,id D
 CREATE INDEX IF NOT EXISTS results_case_idx ON test_results(test_case_id,test_run_id);
 CREATE INDEX IF NOT EXISTS history_case_idx ON edit_history(test_case_id,id DESC);
 CREATE INDEX IF NOT EXISTS history_result_idx ON edit_history(test_result_id,id DESC);
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+ scope text NOT NULL, key text NOT NULL, request_hash text NOT NULL, status_code integer, response_body bytea,
+ content_type text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(scope,key)
+);
+CREATE INDEX IF NOT EXISTS idempotency_created_idx ON idempotency_keys(created_at);

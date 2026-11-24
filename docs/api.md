@@ -45,7 +45,7 @@ curl -F file=@screenshot.png http://127.0.0.1:3000/api/results/1/attachments
 - 結果の復元は編集可能な状態・実際の結果・コメントのみ。実行時スナップショットや添付は変えない。
 - 同一レコードの更新はDBロックで直列化。画面で長時間開いた編集の競合検出は未実装。
 - 自動連携は実行作成 → 応答IDで詳細取得 → 各結果更新 → 画像添付の順。
-  一括インポートの冪等性キーやMaestro形式変換は今後追加する。
+  再送に備えて実行作成・添付には `Idempotency-Key` を付けることを推奨。Maestro形式変換は今後追加する。
 
 ## ケースキーでの取得・upsert
 
@@ -92,4 +92,23 @@ curl -X PATCH -H 'Content-Type: application/json' -d '{"finished_at":"2026-11-07
 ```sh
 curl -X PATCH -H 'Content-Type: application/json' -d '{"status":"failed","comment":"タイムアウト","changed_by":"CI"}' http://127.0.0.1:3000/api/runs/1/results/by-key/LOGIN-001
 curl -F file=@screenshot.png http://127.0.0.1:3000/api/runs/1/results/by-key/LOGIN-001/attachments
+```
+
+## 冪等性キー（Idempotency-Key）
+
+タイムアウト等で同じリクエストを再送しても重複登録されないよう、次のAPIは `Idempotency-Key` ヘッダーを受け付けます。
+
+- 対象: `POST /apps/:app/runs`（実行回の作成）、`POST /results/:id/attachments`（添付）
+- キーは255文字以内の空白を含まないASCII文字列（UUID推奨）。ヘッダーなしは従来どおり毎回処理。
+- スコープはエンドポイントとパスパラメーター単位（実行回はアプリごと、添付は結果ごと）。
+- 同じキー・同じ内容の再送には、最初の成功応答（ステータス・本文）をそのまま返し、
+  `Idempotent-Replayed: true` ヘッダーを付ける。実行回や添付は1件しか作られない。
+- 同じキーで異なる内容を送ると409。最初のリクエストが処理中の場合も409（少し待って再試行）。
+- 処理が失敗（4xx/5xx）した場合はキーを保存しないため、同じキーで再試行できる。
+- 内容の比較はJSONは本文のバイト列、multipartは項目値・ファイル名・ファイル内容で行う（boundaryの違いは無視）。
+- キーは7日間保持する。
+
+```sh
+curl -H 'Content-Type: application/json' -H 'Idempotency-Key: 6f1c0a52-2d1e-4f0e-9f3a-0d2b7c1e9a10' -d '{"run_type":"automated","case_ids":[1]}' http://127.0.0.1:3000/api/apps/1/runs
+curl -H 'Idempotency-Key: upload-run1-login-001-1' -F file=@screenshot.png http://127.0.0.1:3000/api/results/1/attachments
 ```
