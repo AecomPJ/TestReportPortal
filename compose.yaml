@@ -35,7 +35,7 @@ services:
       context: ./frontend
       secrets: [build_ca]
     ports:
-      - "127.0.0.1:${PORT:-3000}:80"
+      - "${PORT:-3000}:80"
     depends_on:
       api:
         condition: service_healthy
