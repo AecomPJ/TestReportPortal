@@ -14,6 +14,7 @@ JSON入力は未知の項目と複数JSONを拒否します。
 | GET | /cases/:id/history | ケース編集履歴 |
 | GET / POST | /apps/:app/runs | 実行一覧／作成 |
 | GET | /runs/:id | 環境・結果・スナップショット・添付の詳細 |
+| PATCH | /runs/:id | 終了日時・環境情報・メモを部分更新 |
 | PUT | /results/:id | 結果を更新（全入力項目指定） |
 | GET | /results/:id/history | 結果編集履歴 |
 | POST | /results/:id/restore/:history | 選択した履歴のafter_dataに復元 |
@@ -59,4 +60,17 @@ curl -F file=@screenshot.png http://127.0.0.1:3000/api/results/1/attachments
 ```sh
 curl -X PUT -H 'Content-Type: application/json' -d '{"title":"ログイン","steps":"ログインボタンを押す","expected_result":"ホーム画面が開く","test_type":"automated","changed_by":"sync"}' http://127.0.0.1:3000/api/apps/1/cases/by-key/LOGIN-001
 curl http://127.0.0.1:3000/api/apps/1/cases/by-key/LOGIN-001
+```
+
+## 実行回の更新
+
+`PATCH /runs/:id` で作成後の実行回を部分更新します。指定した項目のみ変更し、省略した項目は現状維持です。
+
+- 更新可能: `finished_at`、`runner_name`、`executed_by`、`app_version`、`device_name`、`android_version`、`notes`、`summary`
+- アプリ・実行方法・開始日時・対象ケースは変更できない。
+- `finished_at` は開始日時以降に限定（違反は400）。存在しない実行回は404。
+- 項目を1つも指定しない場合は400。実行回の更新履歴は現時点では記録しない。
+
+```sh
+curl -X PATCH -H 'Content-Type: application/json' -d '{"finished_at":"2026-11-07T01:30:00Z","summary":"5件中4件成功"}' http://127.0.0.1:3000/api/runs/1
 ```
