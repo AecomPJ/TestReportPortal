@@ -161,4 +161,37 @@ class Idempotency(unittest.TestCase):
             ids.append(att['id'])
         self.assertEqual(ids[0],ids[1])
         self.assertEqual(len(call(f"/runs/{first['id']}")['results'][0]['attachments']),1)
+def upload(path, name, content, expected=201):
+    raw=f'--ledger\r\nContent-Disposition: form-data; name="file"; filename="{name}"\r\nContent-Type: application/octet-stream\r\n\r\n'.encode()+content+b'\r\n--ledger--\r\n'
+    req=urllib.request.Request(BASE+path,data=raw,headers={'Content-Type':'multipart/form-data; boundary=ledger'})
+    try:
+        with urllib.request.urlopen(req,timeout=30) as r:
+            assert r.status==expected,(r.status,expected); return json.load(r)
+    except urllib.error.HTTPError as e:
+        if e.code!=expected: raise AssertionError((e.code,e.read().decode())) from e
+        return json.load(e)
+class FileAttachments(unittest.TestCase):
+    def test_file_attachments(self):
+        app=call('/apps','POST',{'name':'Smoke '+uuid.uuid4().hex[:8]},201)
+        case=call(f"/apps/{app['id']}/cases",'POST',dict(case_key='LOG-001',title='ログ',steps='開く',expected_result='表示',test_type='automated'),201)
+        run=call(f"/apps/{app['id']}/runs",'POST',dict(run_type='automated',case_ids=[case['id']]),201)
+        rid=call(f"/runs/{run['id']}")['results'][0]['id']
+        path=f'/results/{rid}/attachments'
+        log=b'11-24 10:00:00.000 E/AndroidRuntime: FATAL EXCEPTION: main\n'
+        a=upload(path,'logcat.txt',log)
+        self.assertEqual(a['mime_type'],'text/plain; charset=utf-8')
+        self.assertEqual(upload(path,'flow.json',b'{"ok":true}')['mime_type'],'application/json')
+        self.assertEqual(upload(path,'report.xml',b'<?xml version="1.0"?><testsuites/>')['mime_type'],'application/xml')
+        h=upload(path,'page.log',b'<html><script>alert(1)</script></html>')
+        self.assertEqual(h['mime_type'],'text/plain; charset=utf-8')  # never stored as HTML
+        upload(path,'bad.json',b'{"ok":',400)
+        upload(path,'page.html',b'<html></html>',400)
+        upload(path,'tool.exe',b'MZ\x90\x00\x03\x00\x00\x00',400)
+        upload(path,'empty.txt',b'',400)
+        upload(path,'huge.log',b'a'*(20*1024*1024+1),413)
+        with urllib.request.urlopen(BASE+f"/attachments/{a['id']}") as res:
+            self.assertEqual(res.read(),log)
+            self.assertTrue(res.headers['Content-Disposition'].startswith('attachment'))
+            self.assertEqual(res.headers['X-Content-Type-Options'],'nosniff')
+        self.assertEqual(len(call(f"/runs/{run['id']}")['results'][0]['attachments']),4)
 if __name__=='__main__':unittest.main(verbosity=2)

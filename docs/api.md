@@ -18,10 +18,10 @@ JSON入力は未知の項目と複数JSONを拒否します。
 | PUT | /results/:id | 結果を更新（全入力項目指定） |
 | GET | /results/:id/history | 結果編集履歴 |
 | POST | /results/:id/restore/:history | 選択した履歴のafter_dataに復元 |
-| POST | /results/:id/attachments | multipartのfileに画像を指定 |
+| POST | /results/:id/attachments | multipartのfileに画像・ログ等を指定 |
 | PUT / PATCH | /runs/:run/results/by-key/:case_key | 実行回内の結果をケースキーで更新（PATCHは部分更新） |
 | POST | /runs/:run/results/by-key/:case_key/attachments | 実行回内の結果にケースキーで添付 |
-| GET | /attachments/:id | 画像本体 |
+| GET | /attachments/:id | 添付本体（画像はinline、それ以外はダウンロード） |
 
 作成例（IDは実際の応答値を使う）：
 
@@ -98,7 +98,7 @@ curl -F file=@screenshot.png http://127.0.0.1:3000/api/runs/1/results/by-key/LOG
 
 タイムアウト等で同じリクエストを再送しても重複登録されないよう、次のAPIは `Idempotency-Key` ヘッダーを受け付けます。
 
-- 対象: `POST /apps/:app/runs`（実行回の作成）、`POST /results/:id/attachments`（添付）
+- 対象: `POST /apps/:app/runs`（実行回の作成）、`POST /results/:id/attachments` と `POST /runs/:run/results/by-key/:case_key/attachments`（添付）
 - キーは255文字以内の空白を含まないASCII文字列（UUID推奨）。ヘッダーなしは従来どおり毎回処理。
 - スコープはエンドポイントとパスパラメーター単位（実行回はアプリごと、添付は結果ごと）。
 - 同じキー・同じ内容の再送には、最初の成功応答（ステータス・本文）をそのまま返し、
@@ -111,4 +111,26 @@ curl -F file=@screenshot.png http://127.0.0.1:3000/api/runs/1/results/by-key/LOG
 ```sh
 curl -H 'Content-Type: application/json' -H 'Idempotency-Key: 6f1c0a52-2d1e-4f0e-9f3a-0d2b7c1e9a10' -d '{"run_type":"automated","case_ids":[1]}' http://127.0.0.1:3000/api/apps/1/runs
 curl -H 'Idempotency-Key: upload-run1-login-001-1' -F file=@screenshot.png http://127.0.0.1:3000/api/results/1/attachments
+```
+
+## 添付ファイルの形式
+
+| 種別 | 判定 | 保存されるMIME | 上限 |
+|---|---|---|---|
+| 画像 | 内容がPNG/JPEG/WebP | `image/png` など | 10MB |
+| テキスト（logcat等） | 拡張子 `.txt` / `.log` かつ内容がテキスト | `text/plain; charset=utf-8` | 20MB |
+| JSON | 拡張子 `.json` かつ正しいJSON | `application/json` | 20MB |
+| XML（JUnit XML等） | 拡張子 `.xml` かつ内容がテキスト | `application/xml` | 20MB |
+| ZIP | 拡張子 `.zip` かつ内容がZIP | `application/zip` | 50MB |
+| 動画（画面録画） | 拡張子 `.mp4` かつ内容がMP4 | `video/mp4` | 100MB |
+
+- 上記以外（HTML、実行ファイル等）は400、上限超過は413。空ファイルは400。
+- MIMEはクライアント申告ではなく内容と拡張子からサーバーが決める。HTMLとして保存・配信されることはない。
+- `GET /attachments/:id` は画像のみ `Content-Disposition: inline`、それ以外は `attachment`。
+  `X-Content-Type-Options: nosniff` とサンドボックス化したCSPを付ける。
+- 画面では画像はサムネイル、テキスト系はプレビュー（先頭20万文字）とダウンロード、MP4はプレーヤーで表示する。
+
+```sh
+curl -F file=@logcat.txt -F caption=logcat http://127.0.0.1:3000/api/results/1/attachments
+curl -F file=@report.xml http://127.0.0.1:3000/api/results/1/attachments
 ```

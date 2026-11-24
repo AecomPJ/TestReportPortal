@@ -184,10 +184,10 @@ func (s *server) routes(e *echo.Echo) {
 		})
 	}
 	e.POST("/api/results/:id/restore/:history", s.restoreResult)
-	e.POST("/api/results/:id/attachments", s.upload, s.idempotency)
+	e.POST("/api/results/:id/attachments", s.upload, attachmentBodyLimit, s.idempotency)
 	e.PUT("/api/runs/:run/results/by-key/:case_key", s.saveResultByKey)
 	e.PATCH("/api/runs/:run/results/by-key/:case_key", s.patchResultByKey)
-	e.POST("/api/runs/:run/results/by-key/:case_key/attachments", s.uploadByKey, s.idempotency)
+	e.POST("/api/runs/:run/results/by-key/:case_key/attachments", s.uploadByKey, attachmentBodyLimit, s.idempotency)
 	e.GET("/api/attachments/:id", s.download)
 }
 func validateCase(v caseInput) error {
@@ -447,31 +447,20 @@ func (s *server) upload(c echo.Context) error {
 func (s *server) saveAttachment(c echo.Context, key int64) error {
 	f, err := c.FormFile("file")
 	if err != nil {
-		return echo.NewHTTPError(400, "画像ファイルを指定してください")
+		return echo.NewHTTPError(400, "添付するファイルを指定してください")
 	}
 	src, err := f.Open()
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	data, err := io.ReadAll(io.LimitReader(src, 10*1024*1024+1))
+	data, err := io.ReadAll(io.LimitReader(src, maxAttachmentBytes+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > 10*1024*1024 {
-		return echo.NewHTTPError(413, "画像は10MB以内にしてください")
-	}
-	typ := http.DetectContentType(data)
-	ext := ""
-	switch typ {
-	case "image/png":
-		ext = ".png"
-	case "image/jpeg":
-		ext = ".jpg"
-	case "image/webp":
-		ext = ".webp"
-	default:
-		return echo.NewHTTPError(400, "PNG・JPEG・WebP画像のみ対応しています")
+	typ, ext, err := classifyAttachment(f.Filename, data)
+	if err != nil {
+		return err
 	}
 	token := make([]byte, 24)
 	if _, err = rand.Read(token); err != nil {
@@ -500,7 +489,14 @@ func (s *server) download(c echo.Context) error {
 		return err
 	}
 	c.Response().Header().Set("Content-Type", typ)
-	c.Response().Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
+	// Only images are shown inline. Everything else (logs, XML, archives, video) is a download so that
+	// uploaded text can never be rendered as HTML in the portal's origin.
+	disposition := "attachment"
+	if isInlineImage(typ) {
+		disposition = "inline"
+	}
+	c.Response().Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
+	c.Response().Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; media-src 'self'; sandbox")
 	return c.File(filepath.Join(s.storage, filepath.Base(path)))
 }
 func main() {
@@ -536,7 +532,7 @@ func main() {
 	}
 	e := echo.New()
 	e.HideBanner = true
-	e.Use(middleware.Recover(), middleware.Logger(), middleware.BodyLimit("11M"), middleware.Secure())
+	e.Use(middleware.Recover(), middleware.Logger(), middleware.BodyLimitWithConfig(middleware.BodyLimitConfig{Limit: "11M", Skipper: isAttachmentUpload}), middleware.Secure())
 	e.HTTPErrorHandler = func(err error, c echo.Context) {
 		if c.Response().Committed {
 			return
@@ -583,7 +579,8 @@ func main() {
 	s := &server{db: db, storage: storage}
 	s.routes(e)
 	e.Server.ReadHeaderTimeout = 5 * time.Second
-	e.Server.ReadTimeout = 30 * time.Second
-	e.Server.WriteTimeout = 30 * time.Second
+	// Large logs and screen recordings need more time than JSON requests.
+	e.Server.ReadTimeout = 2 * time.Minute
+	e.Server.WriteTimeout = 2 * time.Minute
 	log.Fatal(e.Start(env("LISTEN_ADDR", "127.0.0.1:8080")))
 }

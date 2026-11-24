@@ -513,6 +513,43 @@ footer {
   border: 1px solid #e2e9e2;
   border-radius: 5px;
 }
+.file-attachment {
+  display: grid;
+  gap: 4px;
+  align-content: start;
+  min-width: 180px;
+  max-width: 100%;
+  font-size: 11px;
+  color: #657c6a;
+}
+.file-attachment a {
+  max-width: none;
+  word-break: break-all;
+}
+.file-attachment video {
+  width: 220px;
+  max-width: 100%;
+  border-radius: 5px;
+  background: #000;
+}
+.file-attachment button {
+  justify-self: start;
+  font-size: 11px;
+  padding: 4px 8px;
+}
+.file-preview {
+  max-height: 320px;
+  max-width: min(720px, 80vw);
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-size: 11px;
+  background: #f2f6f2;
+  border: 1px solid #e2e9e2;
+  border-radius: 5px;
+  padding: 8px;
+  margin: 0;
+}
 .upload input {
   width: 180px;
   padding: 3px;
