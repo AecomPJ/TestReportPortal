@@ -139,6 +139,8 @@ func (s *server) routes(e *echo.Echo) {
 	})
 	e.POST("/api/apps/:app/cases", s.saveCase)
 	e.PUT("/api/cases/:id", s.saveCase)
+	e.GET("/api/apps/:app/cases/by-key/:case_key", s.getCaseByKey)
+	e.PUT("/api/apps/:app/cases/by-key/:case_key", s.upsertCaseByKey)
 	e.GET("/api/apps/:app/runs", func(c echo.Context) error {
 		app, err := id(c, "app")
 		if err != nil {
@@ -184,16 +186,22 @@ func (s *server) routes(e *echo.Echo) {
 	e.POST("/api/results/:id/attachments", s.upload)
 	e.GET("/api/attachments/:id", s.download)
 }
-func (s *server) saveCase(c echo.Context) error {
-	var v caseInput
-	if err := decode(c, &v); err != nil {
-		return err
-	}
+func validateCase(v caseInput) error {
 	if strings.TrimSpace(v.CaseKey) == "" || strings.TrimSpace(v.Title) == "" || strings.TrimSpace(v.Steps) == "" || strings.TrimSpace(v.Expected) == "" {
 		return echo.NewHTTPError(400, "識別子・名称・手順・期待結果は必須です")
 	}
 	if v.TestType != "manual" && v.TestType != "automated" && v.TestType != "both" {
 		return echo.NewHTTPError(400, "不正なテスト方法です")
+	}
+	return nil
+}
+func (s *server) saveCase(c echo.Context) error {
+	var v caseInput
+	if err := decode(c, &v); err != nil {
+		return err
+	}
+	if err := validateCase(v); err != nil {
+		return err
 	}
 	ctx := c.Request().Context()
 	tx, err := s.db.Begin(ctx)

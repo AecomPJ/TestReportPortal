@@ -4,6 +4,7 @@ import base64
 import json
 import os
 import unittest
+import urllib.parse
 import urllib.request
 import urllib.error
 import uuid
@@ -65,4 +66,25 @@ class Workflow(unittest.TestCase):
         self.assertEqual(len(call(path+'/runs')),2)
         self.assertEqual(call(f'/cases/{cid}/history')[0]['action'],'deactivated')
         print(f"Validated app={app['id']}, case={cid}, runs={first['id']},{second['id']}")
+class CaseByKey(unittest.TestCase):
+    def test_case_by_key(self):
+        app=call('/apps','POST',{'name':'Smoke '+uuid.uuid4().hex[:8]},201)
+        other=call('/apps','POST',{'name':'Other '+uuid.uuid4().hex[:8]},201)
+        key='SYNC/001'; enc=urllib.parse.quote(key,safe='')
+        path=f"/apps/{app['id']}/cases/by-key/{enc}"
+        definition=dict(title='同期ケース',steps='開く',expected_result='表示',test_type='automated',changed_by='sync')
+        call(path,expected=404)
+        created=call(path,'PUT',definition,201)
+        self.assertEqual(created['case_key'],key)
+        self.assertEqual(call(path)['id'],created['id'])
+        call(path,'PUT',definition)  # unchanged: no new history
+        updated=call(path,'PUT',{**definition,'title':'同期ケース改'})
+        self.assertEqual(updated['id'],created['id'])
+        self.assertEqual([h['action'] for h in call(f"/cases/{created['id']}/history")],['updated','created'])
+        call(path,'PUT',{**definition,'case_key':'OTHER'},400)
+        call(path,'PUT',{**definition,'test_type':'invalid'},400)
+        call(f"/apps/{other['id']}/cases/by-key/{enc}",expected=404)
+        call(f"/apps/{other['id']}/cases/by-key/{enc}",'PUT',definition,201)
+        self.assertEqual(call(path)['title'],'同期ケース改')
+        call('/apps/999999999/cases/by-key/X',expected=404)
 if __name__=='__main__':unittest.main(verbosity=2)

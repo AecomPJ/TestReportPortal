@@ -9,6 +9,7 @@ JSON入力は未知の項目と複数JSONを拒否します。
 | GET / POST | /apps | アプリ一覧／作成 |
 | GET / POST | /apps/:app/cases | ケースと直近2回の結果／作成 |
 | PUT | /cases/:id | ケース定義を更新（全入力項目指定） |
+| GET / PUT | /apps/:app/cases/by-key/:case_key | ケースをキーで取得／upsert（なければ作成） |
 | GET | /cases/:id/results | 過去の実行結果 |
 | GET | /cases/:id/history | ケース編集履歴 |
 | GET / POST | /apps/:app/runs | 実行一覧／作成 |
@@ -42,3 +43,20 @@ curl -F file=@screenshot.png http://127.0.0.1:3000/api/results/1/attachments
 - 同一レコードの更新はDBロックで直列化。画面で長時間開いた編集の競合検出は未実装。
 - 自動連携は実行作成 → 応答IDで詳細取得 → 各結果更新 → 画像添付の順。
   一括インポートの冪等性キーやMaestro形式変換は今後追加する。
+
+## ケースキーでの取得・upsert
+
+テスト定義（Maestroフロー等）側の識別子 `case_key` でケースを扱えます。キーはURLエンコードして指定します。
+
+- `GET /apps/:app/cases/by-key/:case_key` — 1件取得。アプリまたはケースがなければ404。
+- `PUT /apps/:app/cases/by-key/:case_key` — 存在すれば更新（200）、なければ作成（201）。
+  本文は `POST /apps/:app/cases` と同じ項目。`case_key` は省略可能で、指定する場合はURLと一致させる。
+  `is_active` 省略時は作成なら有効、更新なら現状維持。
+  定義が変わらない場合は更新せず編集履歴も追加しない（200で現在値を返す）。
+  作成・更新は通常の編集と同様に編集履歴へ記録される。
+- 他アプリのケースは同じキーでも別物として扱われ、取得・更新されない。
+
+```sh
+curl -X PUT -H 'Content-Type: application/json' -d '{"title":"ログイン","steps":"ログインボタンを押す","expected_result":"ホーム画面が開く","test_type":"automated","changed_by":"sync"}' http://127.0.0.1:3000/api/apps/1/cases/by-key/LOGIN-001
+curl http://127.0.0.1:3000/api/apps/1/cases/by-key/LOGIN-001
+```
