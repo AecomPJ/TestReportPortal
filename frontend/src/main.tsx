@@ -42,6 +42,71 @@ async function api(path: string, method = "GET", data?: unknown) {
   }
   return r.json();
 }
+const attachmentAccept =
+  "image/png,image/jpeg,image/webp,.txt,.log,.json,.xml,.zip,.mp4,video/mp4";
+const previewLimit = 200_000;
+function formatSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+  if (bytes >= 1024) return `${Math.ceil(bytes / 1024)}KB`;
+  return `${bytes}B`;
+}
+// Images are shown inline, videos with a player, text formats as an escaped preview.
+// The server sends non-images as downloads, so nothing uploaded is rendered as HTML.
+function AttachmentItem({ a }: { a: Row }) {
+  const url = `/api/attachments/${a.id}`;
+  const type: string = a.mime_type || "";
+  const [preview, setPreview] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  if (type.startsWith("image/"))
+    return (
+      <a href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt={a.file_name} />
+        <small>{a.file_name}</small>
+      </a>
+    );
+  const textual =
+    type.startsWith("text/") ||
+    type === "application/json" ||
+    type === "application/xml";
+  return (
+    <div className="file-attachment">
+      {type === "video/mp4" && (
+        <video src={url} controls preload="metadata" />
+      )}
+      <a href={url} download={a.file_name}>
+        ⬇ {a.file_name}
+      </a>
+      <small>
+        {type.split(";")[0]} · {formatSize(a.file_size_bytes)}
+      </small>
+      {textual && (
+        <button
+          type="button"
+          onClick={async () => {
+            if (preview !== null) return setPreview(null);
+            try {
+              const r = await fetch(url);
+              if (!r.ok) throw Error(`HTTP ${r.status}`);
+              const text = await r.text();
+              setPreview(
+                text.length > previewLimit
+                  ? text.slice(0, previewLimit) + "\n…（以降はダウンロードして確認）"
+                  : text,
+              );
+              setError("");
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        >
+          {preview === null ? "プレビュー" : "閉じる"}
+        </button>
+      )}
+      {error && <small className="error">{error}</small>}
+      {preview !== null && <pre className="file-preview">{preview}</pre>}
+    </div>
+  );
+}
 const icons: Record<string, string> = {
   passed: "✓",
   failed: "✕",
@@ -725,18 +790,7 @@ function App() {
                           )}
                           <div className="attachments">
                             {r.attachments.map((a: Row) => (
-                              <a
-                                key={a.id}
-                                href={`/api/attachments/${a.id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                <img
-                                  src={`/api/attachments/${a.id}`}
-                                  alt={a.file_name}
-                                />
-                                <small>{a.file_name}</small>
-                              </a>
+                              <AttachmentItem key={a.id} a={a} />
                             ))}
                           </div>
                           <div className="row-actions">
@@ -757,10 +811,10 @@ function App() {
                               編集履歴・復元
                             </button>
                             <label className="upload">
-                              ＋ 画像を添付
+                              ＋ ファイルを添付
                               <input
                                 type="file"
-                                accept="image/png,image/jpeg,image/webp"
+                                accept={attachmentAccept}
                                 disabled={busy}
                                 onChange={(e) => {
                                   const f = e.target.files?.[0];

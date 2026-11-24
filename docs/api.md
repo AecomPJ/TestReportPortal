@@ -16,8 +16,8 @@ JSON入力は未知の項目と複数JSONを拒否します。
 | PUT | /results/:id | 結果を更新（全入力項目指定） |
 | GET | /results/:id/history | 結果編集履歴 |
 | POST | /results/:id/restore/:history | 選択した履歴のafter_dataに復元 |
-| POST | /results/:id/attachments | multipartのfileに画像を指定 |
-| GET | /attachments/:id | 画像本体 |
+| POST | /results/:id/attachments | multipartのfileに画像・ログ等を指定 |
+| GET | /attachments/:id | 添付本体（画像はinline、それ以外はダウンロード） |
 
 作成例（IDは実際の応答値を使う）：
 
@@ -42,3 +42,25 @@ curl -F file=@screenshot.png http://127.0.0.1:3000/api/results/1/attachments
 - 同一レコードの更新はDBロックで直列化。画面で長時間開いた編集の競合検出は未実装。
 - 自動連携は実行作成 → 応答IDで詳細取得 → 各結果更新 → 画像添付の順。
   一括インポートの冪等性キーやMaestro形式変換は今後追加する。
+
+## 添付ファイルの形式
+
+| 種別 | 判定 | 保存されるMIME | 上限 |
+|---|---|---|---|
+| 画像 | 内容がPNG/JPEG/WebP | `image/png` など | 10MB |
+| テキスト（logcat等） | 拡張子 `.txt` / `.log` かつ内容がテキスト | `text/plain; charset=utf-8` | 20MB |
+| JSON | 拡張子 `.json` かつ正しいJSON | `application/json` | 20MB |
+| XML（JUnit XML等） | 拡張子 `.xml` かつ内容がテキスト | `application/xml` | 20MB |
+| ZIP | 拡張子 `.zip` かつ内容がZIP | `application/zip` | 50MB |
+| 動画（画面録画） | 拡張子 `.mp4` かつ内容がMP4 | `video/mp4` | 100MB |
+
+- 上記以外（HTML、実行ファイル等）は400、上限超過は413。空ファイルは400。
+- MIMEはクライアント申告ではなく内容と拡張子からサーバーが決める。HTMLとして保存・配信されることはない。
+- `GET /attachments/:id` は画像のみ `Content-Disposition: inline`、それ以外は `attachment`。
+  `X-Content-Type-Options: nosniff` とサンドボックス化したCSPを付ける。
+- 画面では画像はサムネイル、テキスト系はプレビュー（先頭20万文字）とダウンロード、MP4はプレーヤーで表示する。
+
+```sh
+curl -F file=@logcat.txt -F caption=logcat http://127.0.0.1:3000/api/results/1/attachments
+curl -F file=@report.xml http://127.0.0.1:3000/api/results/1/attachments
+```
