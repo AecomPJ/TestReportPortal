@@ -19,6 +19,8 @@ JSON入力は未知の項目と複数JSONを拒否します。
 | GET | /results/:id/history | 結果編集履歴 |
 | POST | /results/:id/restore/:history | 選択した履歴のafter_dataに復元 |
 | POST | /results/:id/attachments | multipartのfileに画像を指定 |
+| PUT / PATCH | /runs/:run/results/by-key/:case_key | 実行回内の結果をケースキーで更新（PATCHは部分更新） |
+| POST | /runs/:run/results/by-key/:case_key/attachments | 実行回内の結果にケースキーで添付 |
 | GET | /attachments/:id | 画像本体 |
 
 作成例（IDは実際の応答値を使う）：
@@ -73,4 +75,21 @@ curl http://127.0.0.1:3000/api/apps/1/cases/by-key/LOGIN-001
 
 ```sh
 curl -X PATCH -H 'Content-Type: application/json' -d '{"finished_at":"2026-11-07T01:30:00Z","summary":"5件中4件成功"}' http://127.0.0.1:3000/api/runs/1
+```
+
+## 実行回とケースキーでの結果更新・添付
+
+クライアントが持つ `run_id` と `case_key` だけで結果を操作できます（`result_id` の解決は不要）。
+キーはURLエンコードし、ケースの現在の `case_key` で照合します。
+
+- `PUT /runs/:run/results/by-key/:case_key` — `PUT /results/:id` と同じ本文で更新。
+- `PATCH /runs/:run/results/by-key/:case_key` — `status`、`actual_result`、`comment` のうち指定した項目のみ更新。
+  1つも指定しない場合は400。`changed_by`、`reason` は任意。
+- `POST /runs/:run/results/by-key/:case_key/attachments` — `POST /results/:id/attachments` と同じmultipart。
+- 実行回がない、または実行回に含まれないケースは404。
+- 更新は既存の結果更新と同じく編集履歴に記録される。
+
+```sh
+curl -X PATCH -H 'Content-Type: application/json' -d '{"status":"failed","comment":"タイムアウト","changed_by":"CI"}' http://127.0.0.1:3000/api/runs/1/results/by-key/LOGIN-001
+curl -F file=@screenshot.png http://127.0.0.1:3000/api/runs/1/results/by-key/LOGIN-001/attachments
 ```

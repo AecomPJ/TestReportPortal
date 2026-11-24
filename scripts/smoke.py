@@ -102,4 +102,27 @@ class UpdateRun(unittest.TestCase):
         self.assertTrue(updated['finished_at'].startswith('2026-01-01T00:30:00'))
         self.assertEqual(updated['device_name'],'Pixel')
         self.assertEqual(call(rpath)['summary'],'完了')
+class ResultByKey(unittest.TestCase):
+    def test_result_by_key(self):
+        app=call('/apps','POST',{'name':'Smoke '+uuid.uuid4().hex[:8]},201)
+        path=f"/apps/{app['id']}"
+        base=dict(title='キー',steps='開く',expected_result='表示',test_type='automated')
+        a=call(path+'/cases','POST',{**base,'case_key':'KEY/001'},201)
+        b=call(path+'/cases','POST',{**base,'case_key':'KEY-002'},201)
+        run=call(path+'/runs','POST',dict(run_type='automated',case_ids=[a['id']]),201)
+        rpath=f"/runs/{run['id']}/results/by-key/"+urllib.parse.quote('KEY/001',safe='')
+        call(f"/runs/{run['id']}/results/by-key/KEY-002",'PATCH',{'status':'passed'},404)
+        call(f"/runs/999999999/results/by-key/KEY-002",'PATCH',{'status':'passed'},404)
+        call(rpath,'PATCH',{},400)
+        call(rpath,'PATCH',{'status':'invalid'},400)
+        call(rpath,'PUT',{'status':'failed','actual_result':'エラー','comment':'初回','changed_by':'CI'})
+        patched=call(rpath,'PATCH',{'comment':'再確認'})
+        self.assertEqual((patched['status'],patched['actual_result'],patched['comment']),('failed','エラー','再確認'))
+        history=call(f"/results/{patched['id']}/history")
+        self.assertEqual([h['action'] for h in history],['updated','updated','created'])
+        image=base64.b64decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aX1sAAAAASUVORK5CYII=')
+        raw=b'--ledger\r\nContent-Disposition: form-data; name="file"; filename="screen.png"\r\nContent-Type: image/png\r\n\r\n'+image+b'\r\n--ledger--\r\n'
+        req=urllib.request.Request(BASE+rpath+'/attachments',data=raw,headers={'Content-Type':'multipart/form-data; boundary=ledger'})
+        with urllib.request.urlopen(req) as res: self.assertEqual(res.status,201)
+        self.assertEqual(len(call(f"/runs/{run['id']}")['results'][0]['attachments']),1)
 if __name__=='__main__':unittest.main(verbosity=2)
