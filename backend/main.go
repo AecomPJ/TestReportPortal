@@ -330,6 +330,9 @@ func (s *server) createRun(c echo.Context) error {
 			return e
 		}
 	}
+	if err = completeIdempotency(ctx, tx, c, 201, run); err != nil {
+		return err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
@@ -445,12 +448,28 @@ func (s *server) upload(c echo.Context) error {
 	if err = os.WriteFile(full, data, 0600); err != nil {
 		return err
 	}
-	b, err := object(c.Request().Context(), s.db, "INSERT INTO attachments(test_result_id,file_name,storage_path,mime_type,file_size_bytes,uploaded_by,caption) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING to_jsonb(attachments)-'storage_path'", key, filepath.Base(f.Filename), path, typ, len(data), c.FormValue("uploaded_by"), c.FormValue("caption"))
+	b, err := s.insertAttachment(c, key, filepath.Base(f.Filename), path, typ, len(data))
 	if err != nil {
 		os.Remove(full)
 		return err
 	}
 	return c.JSONBlob(201, b)
+}
+func (s *server) insertAttachment(c echo.Context, key int64, name, path, typ string, size int) (json.RawMessage, error) {
+	ctx := c.Request().Context()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	b, err := object(ctx, tx, "INSERT INTO attachments(test_result_id,file_name,storage_path,mime_type,file_size_bytes,uploaded_by,caption) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING to_jsonb(attachments)-'storage_path'", key, name, path, typ, size, c.FormValue("uploaded_by"), c.FormValue("caption"))
+	if err != nil {
+		return nil, err
+	}
+	if err = completeIdempotency(ctx, tx, c, 201, b); err != nil {
+		return nil, err
+	}
+	return b, tx.Commit(ctx)
 }
 func (s *server) download(c echo.Context) error {
 	key, err := id(c, "id")

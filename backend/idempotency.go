@@ -1,14 +1,14 @@
 package main
 
 import (
-	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"hash"
 	"io"
-	"net"
-	"net/http"
 	"sort"
 	"strings"
 
@@ -24,22 +24,40 @@ const (
 	idempotencyStale = "2 minutes"
 )
 
-type captureWriter struct {
-	http.ResponseWriter
-	buf bytes.Buffer
+const idempotencyContextKey = "idempotency_claim"
+
+// idempotencyClaim is the key claimed by the middleware for the current request.
+type idempotencyClaim struct {
+	scope, key, hash string
 }
 
-func (w *captureWriter) Write(b []byte) (int, error) {
-	w.buf.Write(b)
-	return w.ResponseWriter.Write(b)
-}
-func (w *captureWriter) Flush() {
-	if f, ok := w.ResponseWriter.(http.Flusher); ok {
-		f.Flush()
+// completeIdempotency stores the response for the claimed key inside the handler's transaction, so the
+// created record and its replay are committed together (or not at all) before the response is written.
+// Without an Idempotency-Key it does nothing.
+func completeIdempotency(ctx context.Context, tx pgx.Tx, c echo.Context, status int, body []byte) error {
+	claim, ok := c.Get(idempotencyContextKey).(*idempotencyClaim)
+	if !ok {
+		return nil
 	}
+	tag, err := tx.Exec(ctx, `UPDATE idempotency_keys SET status_code=$4,response_body=$5,content_type=$6
+		WHERE scope=$1 AND key=$2 AND request_hash=$3 AND status_code IS NULL`,
+		claim.scope, claim.key, claim.hash, status, body, echo.MIMEApplicationJSON)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() != 1 {
+		return echo.NewHTTPError(409, "Idempotency-Keyの処理が別のリクエストに引き継がれました。再試行してください")
+	}
+	return nil
 }
-func (w *captureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
-	return http.NewResponseController(w.ResponseWriter).Hijack()
+
+// writeField adds an unambiguous, length-prefixed component to the fingerprint.
+func writeField(h hash.Hash, tag string, value []byte) {
+	var n [8]byte
+	h.Write([]byte(tag))
+	binary.BigEndian.PutUint64(n[:], uint64(len(value)))
+	h.Write(n[:])
+	h.Write(value)
 }
 
 // requestFingerprint hashes what the client meant to send. Multipart bodies are hashed by their
@@ -47,7 +65,7 @@ func (w *captureWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 func requestFingerprint(c echo.Context) (string, error) {
 	h := sha256.New()
 	r := c.Request()
-	io.WriteString(h, r.Method+" "+c.Path()+"\n")
+	writeField(h, "route", []byte(r.Method+" "+c.Path()))
 	if strings.HasPrefix(r.Header.Get(echo.HeaderContentType), echo.MIMEMultipartForm) {
 		form, err := c.MultipartForm()
 		if err != nil {
@@ -60,7 +78,8 @@ func requestFingerprint(c echo.Context) (string, error) {
 		sort.Strings(names)
 		for _, k := range names {
 			for _, v := range form.Value[k] {
-				io.WriteString(h, "v:"+k+"="+v+"\n")
+				writeField(h, "value-name", []byte(k))
+				writeField(h, "value", []byte(v))
 			}
 		}
 		names = names[:0]
@@ -70,15 +89,23 @@ func requestFingerprint(c echo.Context) (string, error) {
 		sort.Strings(names)
 		for _, k := range names {
 			for _, f := range form.File[k] {
-				io.WriteString(h, "f:"+k+"="+f.Filename+"\n")
+				writeField(h, "file-name", []byte(k))
+				writeField(h, "file-filename", []byte(f.Filename))
 				src, err := f.Open()
 				if err != nil {
 					return "", err
 				}
-				_, err = io.Copy(h, src)
+				var n [8]byte
+				binary.BigEndian.PutUint64(n[:], uint64(f.Size))
+				h.Write([]byte("file-content"))
+				h.Write(n[:])
+				written, err := io.Copy(h, src)
 				src.Close()
 				if err != nil {
 					return "", err
+				}
+				if written != f.Size {
+					return "", echo.NewHTTPError(400, "添付ファイルを読み取れませんでした")
 				}
 			}
 		}
@@ -88,13 +115,14 @@ func requestFingerprint(c echo.Context) (string, error) {
 			return "", err
 		}
 		r.Body = io.NopCloser(bytes.NewReader(body))
-		h.Write(body)
+		writeField(h, "body", body)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // idempotency makes a creating endpoint safe to retry. With an Idempotency-Key header, the first
-// successful (2xx) response is stored and replayed for later requests with the same key and body.
+// successful response is stored (by the handler, atomically with the record it creates) and replayed
+// for later requests with the same key and body.
 // The same key with a different body is rejected with 409. Failed requests release the key.
 // Keys are scoped by route and path parameters (e.g. per app for runs, per result for attachments).
 func (s *server) idempotency(next echo.HandlerFunc) echo.HandlerFunc {
@@ -152,17 +180,12 @@ func (s *server) idempotency(next echo.HandlerFunc) echo.HandlerFunc {
 		if err != nil {
 			return err
 		}
-		w := &captureWriter{ResponseWriter: c.Response().Writer}
-		c.Response().Writer = w
+		c.Set(idempotencyContextKey, &idempotencyClaim{scope: scope, key: key, hash: hash})
 		herr := next(c)
-		status := c.Response().Status
-		if herr == nil && c.Response().Committed && status >= 200 && status < 300 {
-			_, err = s.db.Exec(ctx, "UPDATE idempotency_keys SET status_code=$3,response_body=$4,content_type=$5 WHERE scope=$1 AND key=$2",
-				scope, key, status, w.buf.Bytes(), c.Response().Header().Get(echo.HeaderContentType))
-		} else {
-			_, err = s.db.Exec(ctx, "DELETE FROM idempotency_keys WHERE scope=$1 AND key=$2 AND status_code IS NULL", scope, key)
-		}
-		if err != nil {
+		// A successful handler stored its response in the same transaction as its record (completeIdempotency).
+		// Any claim still incomplete means nothing was committed, so release it for a retry. This must run even
+		// if the client has disconnected, hence the context without cancellation.
+		if _, err = s.db.Exec(context.WithoutCancel(ctx), "DELETE FROM idempotency_keys WHERE scope=$1 AND key=$2 AND status_code IS NULL", scope, key); err != nil {
 			c.Logger().Error(err)
 		}
 		return herr
