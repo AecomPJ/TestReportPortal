@@ -131,6 +131,12 @@ class ResultByKey(unittest.TestCase):
         req=urllib.request.Request(BASE+rpath+'/attachments',data=raw,headers={'Content-Type':'multipart/form-data; boundary=ledger'})
         with urllib.request.urlopen(req) as res: self.assertEqual(res.status,201)
         self.assertEqual(len(call(f"/runs/{run['id']}")['results'][0]['attachments']),1)
+        # A key with surrounding whitespace is distinct from the trimmed key and must address its own result.
+        spaced=call(path+'/cases','POST',{**base,'case_key':' KEY-002 '},201)
+        run2=call(path+'/runs','POST',dict(run_type='automated',case_ids=[b['id'],spaced['id']]),201)
+        r=call(f"/runs/{run2['id']}/results/by-key/"+urllib.parse.quote(' KEY-002 ',safe=''),'PATCH',{'status':'blocked'})
+        self.assertEqual(r['test_case_id'],spaced['id'])
+        self.assertEqual(call(f"/runs/{run2['id']}/results/by-key/KEY-002",'PATCH',{'status':'passed'})['test_case_id'],b['id'])
 def send(path, data, headers, expected):
     req=urllib.request.Request(BASE+path,method='POST',data=data,headers=headers)
     try:
