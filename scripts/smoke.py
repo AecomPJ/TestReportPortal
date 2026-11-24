@@ -65,4 +65,19 @@ class Workflow(unittest.TestCase):
         self.assertEqual(len(call(path+'/runs')),2)
         self.assertEqual(call(f'/cases/{cid}/history')[0]['action'],'deactivated')
         print(f"Validated app={app['id']}, case={cid}, runs={first['id']},{second['id']}")
+class UpdateRun(unittest.TestCase):
+    def test_update_run(self):
+        app=call('/apps','POST',{'name':'Smoke '+uuid.uuid4().hex[:8]},201)
+        case=call(f"/apps/{app['id']}/cases",'POST',dict(case_key='RUN-001',title='実行',steps='開く',expected_result='表示',test_type='automated'),201)
+        run=call(f"/apps/{app['id']}/runs",'POST',dict(run_type='automated',case_ids=[case['id']],device_name='Pixel',started_at='2026-01-01T00:00:00Z'),201)
+        self.assertIsNone(run['finished_at'])
+        rpath=f"/runs/{run['id']}"
+        call(rpath,'PATCH',{'finished_at':'2025-12-31T23:59:59Z'},400)
+        call(rpath,'PATCH',{},400)
+        call(rpath,'PATCH',{'unknown':1},400)
+        call('/runs/999999999','PATCH',{'notes':'x'},404)
+        updated=call(rpath,'PATCH',{'finished_at':'2026-01-01T00:30:00Z','summary':'完了'})
+        self.assertTrue(updated['finished_at'].startswith('2026-01-01T00:30:00'))
+        self.assertEqual(updated['device_name'],'Pixel')
+        self.assertEqual(call(rpath)['summary'],'完了')
 if __name__=='__main__':unittest.main(verbosity=2)

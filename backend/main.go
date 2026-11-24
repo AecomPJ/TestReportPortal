@@ -158,6 +158,7 @@ func (s *server) routes(e *echo.Echo) {
 		}
 		return c.JSONBlob(200, b)
 	})
+	e.PATCH("/api/runs/:id", s.updateRun)
 	e.PUT("/api/results/:id", s.saveResult)
 	e.GET("/api/cases/:id/results", func(c echo.Context) error {
 		v, err := id(c, "id")
