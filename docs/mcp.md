@@ -34,14 +34,16 @@ go build -o ../.local/bin/ledger-mcp .
 }
 ```
 
-ビルドせずに `go run` で起動することもできます（起動は遅くなります）。
+ビルドせずに `go run` で起動することもできます（初回はコンパイルのため起動が遅くなります）。
+`go run /path/to/mcp` のようにパスだけを渡すと、起動したプロジェクトのモジュールとして解釈されて失敗するため、
+`-C` で MCP モジュールのディレクトリに移動してから実行します。
 
 ```json
 {
   "mcpServers": {
     "test-report-portal": {
       "command": "go",
-      "args": ["run", "/path/to/TestReportPortal/mcp"],
+      "args": ["-C", "/path/to/TestReportPortal/mcp", "run", "."],
       "env": { "LEDGER_URL": "http://127.0.0.1:3000" }
     }
   }
