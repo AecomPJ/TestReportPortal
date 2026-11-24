@@ -58,8 +58,32 @@ Homebrew の `ca-certificates` を使う場合は
 - 一覧の検索、結果・方法による絞り込み、実行履歴の日付フィルター
 - DBヘルスチェック、DBと画像の永続化、バックアップ
 
-自動テストは構造化APIから登録できます。Maestro実行・専用レポート変換、Excel移行、
+自動テストは構造化API、AIエージェントはMCPサーバーから登録できます。Maestro実行・専用レポート変換、Excel移行、
 添付の削除や世代管理、Excel出力、認証は未実装です。テスト項目の復元は履歴を参照して手動編集します。
+
+## AIエージェント連携（MCP）
+
+`mcp/` に Claude Code などから使う MCP サーバー（stdio）があります。
+実行回の作成 → 結果登録 → スクリーンショット・ログ添付 → 終了を、操作を絞ったツールで行えます。
+
+```sh
+cd mcp && go build -o ../.local/bin/ledger-mcp .
+```
+
+テストするプロジェクトの `.mcp.json` に追加します。
+
+```json
+{
+  "mcpServers": {
+    "test-report-portal": {
+      "command": "/path/to/TestReportPortal/.local/bin/ledger-mcp",
+      "env": { "LEDGER_URL": "http://127.0.0.1:3000", "LEDGER_ACTOR": "Claude Code" }
+    }
+  }
+}
+```
+
+ツール一覧・環境変数・添付を許可するディレクトリの設定は [docs/mcp.md](docs/mcp.md)。
 
 ## 開発
 
@@ -121,4 +145,4 @@ docker compose up -d
 ```
 
 バックアップにはテスト結果・端末情報・画像が含まれます。保存先は運用に合わせて保護してください。
-APIの使い方は [docs/api.md](docs/api.md)。
+APIの使い方は [docs/api.md](docs/api.md)、MCPサーバーは [docs/mcp.md](docs/mcp.md)。
