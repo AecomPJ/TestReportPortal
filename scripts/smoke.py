@@ -87,6 +87,12 @@ class CaseByKey(unittest.TestCase):
         call(f"/apps/{other['id']}/cases/by-key/{enc}",'PUT',definition,201)
         self.assertEqual(call(path)['title'],'同期ケース改')
         call('/apps/999999999/cases/by-key/X',expected=404)
+        # Surrounding whitespace and percent signs are part of the key and must not be trimmed or double-decoded.
+        for raw in (' SPACED ','PCT%41'):
+            p=f"/apps/{app['id']}/cases/by-key/"+urllib.parse.quote(raw,safe='')
+            self.assertEqual(call(p,'PUT',definition,201)['case_key'],raw)
+            self.assertEqual(call(p)['case_key'],raw)
+        call(f"/apps/{app['id']}/cases/by-key/SPACED",expected=404)
 class UpdateRun(unittest.TestCase):
     def test_update_run(self):
         app=call('/apps','POST',{'name':'Smoke '+uuid.uuid4().hex[:8]},201)

@@ -10,13 +10,19 @@ import (
 	"github.com/labstack/echo/v4"
 )
 
-// caseKeyParam returns the URL-decoded case_key path parameter.
+// caseKeyParam returns the decoded case_key path parameter. Keys are stored exactly as entered
+// (only blank keys are rejected), so surrounding whitespace is significant and must not be trimmed.
 func caseKeyParam(c echo.Context) (string, error) {
-	key := strings.TrimSpace(c.Param("case_key"))
-	if decoded, err := url.PathUnescape(key); err == nil {
-		key = strings.TrimSpace(decoded)
+	key := c.Param("case_key")
+	// Echo matches on RawPath when the URL contains escapes such as %2F; only then is the value still encoded.
+	if c.Request().URL.RawPath != "" {
+		decoded, err := url.PathUnescape(key)
+		if err != nil {
+			return "", echo.NewHTTPError(400, "ケースの識別子のURLエンコードが不正です")
+		}
+		key = decoded
 	}
-	if key == "" {
+	if strings.TrimSpace(key) == "" {
 		return "", echo.NewHTTPError(400, "ケースの識別子を指定してください")
 	}
 	return key, nil
