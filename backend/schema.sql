@@ -44,3 +44,4 @@ CREATE TABLE IF NOT EXISTS idempotency_keys (
  content_type text NOT NULL DEFAULT '', created_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY(scope,key)
 );
 CREATE INDEX IF NOT EXISTS idempotency_created_idx ON idempotency_keys(created_at);
+ALTER TABLE apps ADD COLUMN IF NOT EXISTS current_version text NOT NULL DEFAULT '';

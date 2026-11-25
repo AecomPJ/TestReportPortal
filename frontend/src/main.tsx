@@ -226,6 +226,26 @@ function App() {
     R([]);
     void act(() => refresh(appID));
   }, [appID]);
+  function editApp(a?: Row) {
+    Modal({
+      title: a ? "アプリ情報を編集" : "アプリを追加",
+      fields: [
+        field("name", "アプリ名", a?.name, true),
+        field("package_name", "パッケージ名", a?.package_name),
+        field("current_version", "現在のバージョン（例: 1.2.0）", a?.current_version),
+        field("description", "説明", a?.description, false, "textarea"),
+      ],
+      submit: async (v) => {
+        const saved = await api(
+          a ? `/apps/${a.id}` : "/apps",
+          a ? "PUT" : "POST",
+          v,
+        );
+        await refreshApps();
+        ID(saved.id);
+      },
+    });
+  }
   function casePayload(c: Row) {
     return Object.fromEntries(
       [
@@ -291,7 +311,11 @@ function App() {
           options: methods,
         },
         field("runner_name", "実行ツール（Maestro など）"),
-        field("app_version", "アプリ版"),
+        field(
+          "app_version",
+          "アプリのバージョン",
+          current?.current_version,
+        ),
         field("device_name", "端末名"),
         field("android_version", "Android版"),
         field("executed_by", "実行者"),
@@ -385,24 +409,7 @@ function App() {
             </option>
           ))}
         </select>
-        <button
-          className="subtle"
-          onClick={() =>
-            Modal({
-              title: "アプリを追加",
-              fields: [
-                field("name", "アプリ名", "", true),
-                field("package_name", "パッケージ名"),
-                field("description", "説明", "", false, "textarea"),
-              ],
-              submit: async (v) => {
-                const a = await api("/apps", "POST", v);
-                await refreshApps();
-                ID(a.id);
-              },
-            })
-          }
-        >
+        <button className="subtle" onClick={() => editApp()}>
           ＋ アプリを追加
         </button>
         <nav>
@@ -444,19 +451,34 @@ function App() {
             <div>
               <p className="eyebrow">TEST MANAGEMENT</p>
               <h1>{current?.name || "テスト台帳へようこそ"}</h1>
+              {(current?.package_name || current?.current_version) && (
+                <p className="package-name">
+                  {[
+                    current.package_name,
+                    current.current_version && `v${current.current_version}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              )}
               <p className="muted">
                 {current?.description ||
                   "テスト結果と証跡をまとめて、品質の変化を追いかける。"}
               </p>
             </div>
-            {appID > 0 && (
-              <button
-                className="primary"
-                disabled={busy || !active.length}
-                onClick={addRun}
-              >
-                ＋ テスト実行を作成
-              </button>
+            {current && (
+              <div className="heading-actions">
+                <button disabled={busy} onClick={() => editApp(current)}>
+                  アプリ情報を編集
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy || !active.length}
+                  onClick={addRun}
+                >
+                  ＋ テスト実行を作成
+                </button>
+              </div>
             )}
           </div>
           {!appID ? (

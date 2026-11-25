@@ -26,6 +26,11 @@ class Workflow(unittest.TestCase):
         self.assertEqual(caught.exception.code,403)
         app=call('/apps','POST',{'name':'Smoke '+uuid.uuid4().hex[:8]},201)
         path=f"/apps/{app['id']}"
+        renamed=call(path,'PUT',{'name':' Renamed ','package_name':'com.example.smoke','current_version':' 2.1.0 ','description':'更新後'})
+        self.assertEqual((renamed['id'],renamed['name'],renamed['package_name'],renamed['current_version'],renamed['description']),(app['id'],'Renamed','com.example.smoke','2.1.0','更新後'))
+        call(path,'PUT',{'name':' '},400)
+        call(path,'PUT',{'name':'x','unknown':1},400)
+        call('/apps/999999999','PUT',{'name':'x'},404)
         definition=dict(case_key='LOGIN-001',title='ログイン',category='認証',precondition='',steps='ログインを押す',expected_result='ホーム画面',test_type='both',sort_order=0,is_active=True)
         case=call(path+'/cases','POST',definition,201); cid=case['id']
         call(path+'/cases','POST',definition,409)

@@ -204,6 +204,18 @@ header {
 .heading .muted {
   margin: 0;
 }
+.package-name {
+  margin: 0 0 4px;
+  color: #6d7e74;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+}
+.heading-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
 .primary {
   background: #246d51;
   color: #fff;
