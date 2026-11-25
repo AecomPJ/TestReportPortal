@@ -116,6 +116,7 @@ func (s *server) routes(e *echo.Echo) {
 		var v struct {
 			Name        string `json:"name"`
 			Package     string `json:"package_name"`
+			Version     string `json:"current_version"`
 			Description string `json:"description"`
 		}
 		if err := decode(c, &v); err != nil {
@@ -124,12 +125,13 @@ func (s *server) routes(e *echo.Echo) {
 		if strings.TrimSpace(v.Name) == "" {
 			return echo.NewHTTPError(400, "アプリ名は必須です")
 		}
-		b, err := object(c.Request().Context(), s.db, "INSERT INTO apps(name,package_name,description) VALUES($1,$2,$3) RETURNING to_jsonb(apps)", strings.TrimSpace(v.Name), v.Package, v.Description)
+		b, err := object(c.Request().Context(), s.db, "INSERT INTO apps(name,package_name,current_version,description) VALUES($1,$2,$3,$4) RETURNING to_jsonb(apps)", strings.TrimSpace(v.Name), v.Package, strings.TrimSpace(v.Version), v.Description)
 		if err != nil {
 			return err
 		}
 		return c.JSONBlob(201, b)
 	})
+	e.PUT("/api/apps/:app", s.updateApp)
 	e.GET("/api/apps/:app/cases", func(c echo.Context) error {
 		app, err := id(c, "app")
 		if err != nil {
@@ -139,6 +141,8 @@ func (s *server) routes(e *echo.Echo) {
 	})
 	e.POST("/api/apps/:app/cases", s.saveCase)
 	e.PUT("/api/cases/:id", s.saveCase)
+	e.GET("/api/apps/:app/cases/by-key/:case_key", s.getCaseByKey)
+	e.PUT("/api/apps/:app/cases/by-key/:case_key", s.upsertCaseByKey)
 	e.GET("/api/apps/:app/runs", func(c echo.Context) error {
 		app, err := id(c, "app")
 		if err != nil {
@@ -146,7 +150,7 @@ func (s *server) routes(e *echo.Echo) {
 		}
 		return s.list(c, "SELECT u.*, (SELECT count(*) FROM test_results r WHERE r.test_run_id=u.id) AS result_count FROM test_runs u WHERE app_id=$1 ORDER BY started_at DESC,id DESC", app)
 	})
-	e.POST("/api/apps/:app/runs", s.createRun)
+	e.POST("/api/apps/:app/runs", s.createRun, s.idempotency)
 	e.GET("/api/runs/:id", func(c echo.Context) error {
 		v, err := id(c, "id")
 		if err != nil {
@@ -158,6 +162,7 @@ func (s *server) routes(e *echo.Echo) {
 		}
 		return c.JSONBlob(200, b)
 	})
+	e.PATCH("/api/runs/:id", s.updateRun)
 	e.PUT("/api/results/:id", s.saveResult)
 	e.GET("/api/cases/:id/results", func(c echo.Context) error {
 		v, err := id(c, "id")
@@ -181,19 +186,28 @@ func (s *server) routes(e *echo.Echo) {
 		})
 	}
 	e.POST("/api/results/:id/restore/:history", s.restoreResult)
-	e.POST("/api/results/:id/attachments", s.upload)
+	e.POST("/api/results/:id/attachments", s.upload, attachmentBodyLimit, s.idempotency)
+	e.PUT("/api/runs/:run/results/by-key/:case_key", s.saveResultByKey)
+	e.PATCH("/api/runs/:run/results/by-key/:case_key", s.patchResultByKey)
+	e.POST("/api/runs/:run/results/by-key/:case_key/attachments", s.uploadByKey, attachmentBodyLimit, s.idempotency)
 	e.GET("/api/attachments/:id", s.download)
+}
+func validateCase(v caseInput) error {
+	if strings.TrimSpace(v.CaseKey) == "" || strings.TrimSpace(v.Title) == "" || strings.TrimSpace(v.Steps) == "" || strings.TrimSpace(v.Expected) == "" {
+		return echo.NewHTTPError(400, "識別子・名称・手順・期待結果は必須です")
+	}
+	if v.TestType != "manual" && v.TestType != "automated" && v.TestType != "both" {
+		return echo.NewHTTPError(400, "不正なテスト方法です")
+	}
+	return nil
 }
 func (s *server) saveCase(c echo.Context) error {
 	var v caseInput
 	if err := decode(c, &v); err != nil {
 		return err
 	}
-	if strings.TrimSpace(v.CaseKey) == "" || strings.TrimSpace(v.Title) == "" || strings.TrimSpace(v.Steps) == "" || strings.TrimSpace(v.Expected) == "" {
-		return echo.NewHTTPError(400, "識別子・名称・手順・期待結果は必須です")
-	}
-	if v.TestType != "manual" && v.TestType != "automated" && v.TestType != "both" {
-		return echo.NewHTTPError(400, "不正なテスト方法です")
+	if err := validateCase(v); err != nil {
+		return err
 	}
 	ctx := c.Request().Context()
 	tx, err := s.db.Begin(ctx)
@@ -330,19 +344,30 @@ func (s *server) createRun(c echo.Context) error {
 			return e
 		}
 	}
+	if err = completeIdempotency(ctx, tx, c, 201, run); err != nil {
+		return err
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
 	return c.JSONBlob(201, run)
 }
 func (s *server) saveResult(c echo.Context) error {
+	key, err := id(c, "id")
+	if err != nil {
+		return err
+	}
 	var v resultInput
 	if e := decode(c, &v); e != nil {
 		return e
 	}
-	return s.updateResult(c, v, 0)
+	return s.updateResult(c, key, v, 0, nil)
 }
 func (s *server) restoreResult(c echo.Context) error {
+	key, e := id(c, "id")
+	if e != nil {
+		return e
+	}
 	h, e := id(c, "history")
 	if e != nil {
 		return e
@@ -354,13 +379,11 @@ func (s *server) restoreResult(c echo.Context) error {
 	if e = decode(c, &v); e != nil {
 		return e
 	}
-	return s.updateResult(c, resultInput{ChangedBy: v.ChangedBy, Reason: v.Reason}, h)
+	return s.updateResult(c, key, resultInput{ChangedBy: v.ChangedBy, Reason: v.Reason}, h, nil)
 }
-func (s *server) updateResult(c echo.Context, v resultInput, history int64) error {
-	key, err := id(c, "id")
-	if err != nil {
-		return err
-	}
+
+// updateResult writes a result inside a row lock. When patch is set, omitted fields keep the locked current values.
+func (s *server) updateResult(c echo.Context, key int64, v resultInput, history int64, patch *resultPatch) error {
 	ctx := c.Request().Context()
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -372,6 +395,22 @@ func (s *server) updateResult(c echo.Context, v resultInput, history int64) erro
 		return err
 	}
 	action := "updated"
+	if patch != nil {
+		var cur resultInput
+		if e := json.Unmarshal(before, &cur); e != nil {
+			return e
+		}
+		v = resultInput{Status: cur.Status, Actual: cur.Actual, Comment: cur.Comment, ChangedBy: patch.ChangedBy, Reason: patch.Reason}
+		if patch.Status != nil {
+			v.Status = *patch.Status
+		}
+		if patch.Actual != nil {
+			v.Actual = *patch.Actual
+		}
+		if patch.Comment != nil {
+			v.Comment = *patch.Comment
+		}
+	}
 	if history > 0 {
 		b, e := object(ctx, tx, "SELECT after_data FROM edit_history WHERE id=$1 AND test_result_id=$2", history, key)
 		if e != nil {
@@ -408,33 +447,25 @@ func (s *server) upload(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	return s.saveAttachment(c, key)
+}
+func (s *server) saveAttachment(c echo.Context, key int64) error {
 	f, err := c.FormFile("file")
 	if err != nil {
-		return echo.NewHTTPError(400, "画像ファイルを指定してください")
+		return echo.NewHTTPError(400, "添付するファイルを指定してください")
 	}
 	src, err := f.Open()
 	if err != nil {
 		return err
 	}
 	defer src.Close()
-	data, err := io.ReadAll(io.LimitReader(src, 10*1024*1024+1))
+	data, err := io.ReadAll(io.LimitReader(src, maxAttachmentBytes+1))
 	if err != nil {
 		return err
 	}
-	if len(data) > 10*1024*1024 {
-		return echo.NewHTTPError(413, "画像は10MB以内にしてください")
-	}
-	typ := http.DetectContentType(data)
-	ext := ""
-	switch typ {
-	case "image/png":
-		ext = ".png"
-	case "image/jpeg":
-		ext = ".jpg"
-	case "image/webp":
-		ext = ".webp"
-	default:
-		return echo.NewHTTPError(400, "PNG・JPEG・WebP画像のみ対応しています")
+	typ, ext, err := classifyAttachment(f.Filename, data)
+	if err != nil {
+		return err
 	}
 	token := make([]byte, 24)
 	if _, err = rand.Read(token); err != nil {
@@ -445,12 +476,28 @@ func (s *server) upload(c echo.Context) error {
 	if err = os.WriteFile(full, data, 0600); err != nil {
 		return err
 	}
-	b, err := object(c.Request().Context(), s.db, "INSERT INTO attachments(test_result_id,file_name,storage_path,mime_type,file_size_bytes,uploaded_by,caption) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING to_jsonb(attachments)-'storage_path'", key, filepath.Base(f.Filename), path, typ, len(data), c.FormValue("uploaded_by"), c.FormValue("caption"))
+	b, err := s.insertAttachment(c, key, filepath.Base(f.Filename), path, typ, len(data))
 	if err != nil {
 		os.Remove(full)
 		return err
 	}
 	return c.JSONBlob(201, b)
+}
+func (s *server) insertAttachment(c echo.Context, key int64, name, path, typ string, size int) (json.RawMessage, error) {
+	ctx := c.Request().Context()
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	b, err := object(ctx, tx, "INSERT INTO attachments(test_result_id,file_name,storage_path,mime_type,file_size_bytes,uploaded_by,caption) VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING to_jsonb(attachments)-'storage_path'", key, name, path, typ, size, c.FormValue("uploaded_by"), c.FormValue("caption"))
+	if err != nil {
+		return nil, err
+	}
+	if err = completeIdempotency(ctx, tx, c, 201, b); err != nil {
+		return nil, err
+	}
+	return b, tx.Commit(ctx)
 }
 func (s *server) download(c echo.Context) error {
 	key, err := id(c, "id")
@@ -463,7 +510,14 @@ func (s *server) download(c echo.Context) error {
 		return err
 	}
 	c.Response().Header().Set("Content-Type", typ)
-	c.Response().Header().Set("Content-Disposition", mime.FormatMediaType("inline", map[string]string{"filename": name}))
+	// Only images are shown inline. Everything else (logs, XML, archives, video) is a download so that
+	// uploaded text can never be rendered as HTML in the portal's origin.
+	disposition := "attachment"
+	if isInlineImage(typ) {
+		disposition = "inline"
+	}
+	c.Response().Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
+	c.Response().Header().Set("Content-Security-Policy", "default-src 'none'; img-src 'self'; media-src 'self'; sandbox")
 	return c.File(filepath.Join(s.storage, filepath.Base(path)))
 }
 func main() {
@@ -499,7 +553,7 @@ func main() {
 	}
 	e := echo.New()
 	e.HideBanner = true
-	e.Use(middleware.Recover(), middleware.Logger(), middleware.BodyLimit("11M"), middleware.Secure())
+	e.Use(middleware.Recover(), middleware.Logger(), middleware.BodyLimitWithConfig(middleware.BodyLimitConfig{Limit: "11M", Skipper: isAttachmentUpload}), middleware.Secure())
 	e.HTTPErrorHandler = func(err error, c echo.Context) {
 		if c.Response().Committed {
 			return
@@ -546,7 +600,8 @@ func main() {
 	s := &server{db: db, storage: storage}
 	s.routes(e)
 	e.Server.ReadHeaderTimeout = 5 * time.Second
-	e.Server.ReadTimeout = 30 * time.Second
-	e.Server.WriteTimeout = 30 * time.Second
+	// Large logs and screen recordings need more time than JSON requests.
+	e.Server.ReadTimeout = 2 * time.Minute
+	e.Server.WriteTimeout = 2 * time.Minute
 	log.Fatal(e.Start(env("LISTEN_ADDR", "127.0.0.1:8080")))
 }

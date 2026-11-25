@@ -42,8 +42,112 @@ async function api(path: string, method = "GET", data?: unknown) {
   }
   return r.json();
 }
+const attachmentAccept =
+  "image/png,image/jpeg,image/webp,.txt,.log,.json,.xml,.zip,.mp4,video/mp4";
+const previewLimit = 200_000;
+function formatSize(bytes: number) {
+  if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
+  if (bytes >= 1024) return `${Math.ceil(bytes / 1024)}KB`;
+  return `${bytes}B`;
+}
+// Images are shown inline, videos with a player, text formats as an escaped preview.
+// The server sends non-images as downloads, so nothing uploaded is rendered as HTML.
+function AttachmentItem({ a }: { a: Row }) {
+  const url = `/api/attachments/${a.id}`;
+  const type: string = a.mime_type || "";
+  const [preview, setPreview] = useState<string | null>(null);
+  const [error, setError] = useState("");
+  if (type.startsWith("image/"))
+    return (
+      <a href={url} target="_blank" rel="noreferrer">
+        <img src={url} alt={a.file_name} />
+        <small>{a.file_name}</small>
+      </a>
+    );
+  const textual =
+    type.startsWith("text/") ||
+    type === "application/json" ||
+    type === "application/xml";
+  return (
+    <div className="file-attachment">
+      {type === "video/mp4" && (
+        <video src={url} controls preload="metadata" />
+      )}
+      <a href={url} download={a.file_name}>
+        ⬇ {a.file_name}
+      </a>
+      <small>
+        {type.split(";")[0]} · {formatSize(a.file_size_bytes)}
+      </small>
+      {textual && (
+        <button
+          type="button"
+          onClick={async () => {
+            if (preview !== null) return setPreview(null);
+            try {
+              const r = await fetch(url);
+              if (!r.ok) throw Error(`HTTP ${r.status}`);
+              // Decode with the stored charset (e.g. UTF-16 logs); r.text() always assumes UTF-8.
+              const charset =
+                /charset=([^;]+)/i.exec(r.headers.get("Content-Type") || "")?.[1] ||
+                "utf-8";
+              let decoder: TextDecoder;
+              try {
+                decoder = new TextDecoder(charset.trim());
+              } catch {
+                decoder = new TextDecoder();
+              }
+              const text = decoder.decode(await r.arrayBuffer());
+              setPreview(
+                text.length > previewLimit
+                  ? text.slice(0, previewLimit) + "\n…（以降はダウンロードして確認）"
+                  : text,
+              );
+              setError("");
+            } catch (e) {
+              setError(e instanceof Error ? e.message : String(e));
+            }
+          }}
+        >
+          {preview === null ? "プレビュー" : "閉じる"}
+        </button>
+      )}
+      {error && <small className="error">{error}</small>}
+      {preview !== null && <pre className="file-preview">{preview}</pre>}
+    </div>
+  );
+}
+const icons: Record<string, string> = {
+  passed: "✓",
+  failed: "✕",
+  blocked: "⚠",
+  not_run: "–",
+};
+// The list clamps steps to three lines; long ones get a real button (not just a title tooltip)
+// so the full text is reachable by keyboard and touch as well.
+function Steps({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.split("\n").length > 3 || text.length > 90;
+  return (
+    <>
+      <p className={"steps" + (open ? " open" : "")}>{text}</p>
+      {long && (
+        <button
+          type="button"
+          className="text steps-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? "折りたたむ" : "全文を表示"}
+        </button>
+      )}
+    </>
+  );
+}
 function Badge({ status }: { status: string }) {
-  return <span className={"badge " + status}>{statuses[status]}</span>;
+  return <span className={"badge " + status}>
+      {icons[status]} {statuses[status]}
+    </span>;
 }
 const field = (
   key: string,
@@ -153,6 +257,26 @@ function App() {
     R([]);
     void act(() => refresh(appID));
   }, [appID]);
+  function editApp(a?: Row) {
+    Modal({
+      title: a ? "アプリ情報を編集" : "アプリを追加",
+      fields: [
+        field("name", "アプリ名", a?.name, true),
+        field("package_name", "パッケージ名", a?.package_name),
+        field("current_version", "現在のバージョン（例: 1.2.0）", a?.current_version),
+        field("description", "説明", a?.description, false, "textarea"),
+      ],
+      submit: async (v) => {
+        const saved = await api(
+          a ? `/apps/${a.id}` : "/apps",
+          a ? "PUT" : "POST",
+          v,
+        );
+        await refreshApps();
+        ID(saved.id);
+      },
+    });
+  }
   function casePayload(c: Row) {
     return Object.fromEntries(
       [
@@ -218,7 +342,11 @@ function App() {
           options: methods,
         },
         field("runner_name", "実行ツール（Maestro など）"),
-        field("app_version", "アプリ版"),
+        field(
+          "app_version",
+          "アプリのバージョン",
+          current?.current_version,
+        ),
         field("device_name", "端末名"),
         field("android_version", "Android版"),
         field("executed_by", "実行者"),
@@ -312,24 +440,7 @@ function App() {
             </option>
           ))}
         </select>
-        <button
-          className="subtle"
-          onClick={() =>
-            Modal({
-              title: "アプリを追加",
-              fields: [
-                field("name", "アプリ名", "", true),
-                field("package_name", "パッケージ名"),
-                field("description", "説明", "", false, "textarea"),
-              ],
-              submit: async (v) => {
-                const a = await api("/apps", "POST", v);
-                await refreshApps();
-                ID(a.id);
-              },
-            })
-          }
-        >
+        <button className="subtle" onClick={() => editApp()}>
           ＋ アプリを追加
         </button>
         <nav>
@@ -371,19 +482,34 @@ function App() {
             <div>
               <p className="eyebrow">TEST MANAGEMENT</p>
               <h1>{current?.name || "テスト台帳へようこそ"}</h1>
+              {(current?.package_name || current?.current_version) && (
+                <p className="package-name">
+                  {[
+                    current.package_name,
+                    current.current_version && `v${current.current_version}`,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </p>
+              )}
               <p className="muted">
                 {current?.description ||
                   "テスト結果と証跡をまとめて、品質の変化を追いかける。"}
               </p>
             </div>
-            {appID > 0 && (
-              <button
-                className="primary"
-                disabled={busy || !active.length}
-                onClick={addRun}
-              >
-                ＋ テスト実行を作成
-              </button>
+            {current && (
+              <div className="heading-actions">
+                <button disabled={busy} onClick={() => editApp(current)}>
+                  アプリ情報を編集
+                </button>
+                <button
+                  className="primary"
+                  disabled={busy || !active.length}
+                  onClick={addRun}
+                >
+                  ＋ テスト実行を作成
+                </button>
+              </div>
             )}
           </div>
           {!appID ? (
@@ -474,6 +600,7 @@ function App() {
                       <thead>
                         <tr>
                           <th>テスト項目</th>
+                          <th>手順</th>
                           <th>カテゴリ / 方法</th>
                           <th>最新の結果</th>
                           <th>前回の結果</th>
@@ -504,6 +631,13 @@ function App() {
                               >
                                 {c.title}
                               </button>
+                            </td>
+                            <td className="steps-cell">
+                              {c.steps ? (
+                                <Steps text={c.steps} />
+                              ) : (
+                                <span className="muted">—</span>
+                              )}
                             </td>
                             <td>
                               {c.category || "—"}
@@ -667,7 +801,7 @@ function App() {
                       </p>
                       <p>{run.notes}</p>
                       {run.results.map((r: Row) => (
-                        <article className="result" key={r.id}>
+                        <article className={"result " + r.status} key={r.id}>
                           <div className="result-header">
                             <div>
                               <small className="case-key">
@@ -707,18 +841,7 @@ function App() {
                           )}
                           <div className="attachments">
                             {r.attachments.map((a: Row) => (
-                              <a
-                                key={a.id}
-                                href={`/api/attachments/${a.id}`}
-                                target="_blank"
-                                rel="noreferrer"
-                              >
-                                <img
-                                  src={`/api/attachments/${a.id}`}
-                                  alt={a.file_name}
-                                />
-                                <small>{a.file_name}</small>
-                              </a>
+                              <AttachmentItem key={a.id} a={a} />
                             ))}
                           </div>
                           <div className="row-actions">
@@ -739,10 +862,10 @@ function App() {
                               編集履歴・復元
                             </button>
                             <label className="upload">
-                              ＋ 画像を添付
+                              ＋ ファイルを添付
                               <input
                                 type="file"
-                                accept="image/png,image/jpeg,image/webp"
+                                accept={attachmentAccept}
                                 disabled={busy}
                                 onChange={(e) => {
                                   const f = e.target.files?.[0];
