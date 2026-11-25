@@ -87,7 +87,17 @@ function AttachmentItem({ a }: { a: Row }) {
             try {
               const r = await fetch(url);
               if (!r.ok) throw Error(`HTTP ${r.status}`);
-              const text = await r.text();
+              // Decode with the stored charset (e.g. UTF-16 logs); r.text() always assumes UTF-8.
+              const charset =
+                /charset=([^;]+)/i.exec(r.headers.get("Content-Type") || "")?.[1] ||
+                "utf-8";
+              let decoder: TextDecoder;
+              try {
+                decoder = new TextDecoder(charset.trim());
+              } catch {
+                decoder = new TextDecoder();
+              }
+              const text = decoder.decode(await r.arrayBuffer());
               setPreview(
                 text.length > previewLimit
                   ? text.slice(0, previewLimit) + "\n…（以降はダウンロードして確認）"
@@ -113,6 +123,27 @@ const icons: Record<string, string> = {
   blocked: "⚠",
   not_run: "–",
 };
+// The list clamps steps to three lines; long ones get a real button (not just a title tooltip)
+// so the full text is reachable by keyboard and touch as well.
+function Steps({ text }: { text: string }) {
+  const [open, setOpen] = useState(false);
+  const long = text.split("\n").length > 3 || text.length > 90;
+  return (
+    <>
+      <p className={"steps" + (open ? " open" : "")}>{text}</p>
+      {long && (
+        <button
+          type="button"
+          className="text steps-toggle"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+        >
+          {open ? "折りたたむ" : "全文を表示"}
+        </button>
+      )}
+    </>
+  );
+}
 function Badge({ status }: { status: string }) {
   return <span className={"badge " + status}>
       {icons[status]} {statuses[status]}
@@ -603,9 +634,7 @@ function App() {
                             </td>
                             <td className="steps-cell">
                               {c.steps ? (
-                                <p className="steps" title={c.steps}>
-                                  {c.steps}
-                                </p>
+                                <Steps text={c.steps} />
                               ) : (
                                 <span className="muted">—</span>
                               )}

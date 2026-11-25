@@ -11,8 +11,8 @@ erDiagram
     test_runs ||--o{ test_results : "test_run_id"
     test_cases ||--o{ test_results : "test_case_id"
     test_results ||--o{ attachments : "test_result_id"
-    test_cases ||--o{ edit_history : "test_case_id"
-    test_results ||--o{ edit_history : "test_result_id"
+    test_cases o|--o{ edit_history : "test_case_id"
+    test_results o|--o{ edit_history : "test_result_id"
 
     apps {
         bigint id PK
@@ -111,7 +111,7 @@ erDiagram
 - `app_id` (FK → `apps.id`)
 - `run_type`（manual / automated）
 - `runner_name`（例: Maestro。任意）
-- `executed_by`（認証を導入しない場合は自由記述またはNULL）
+- `executed_by`（認証を導入しない場合は自由記述。未指定時は空文字列を保存する）
 - `started_at`, `finished_at`
 - `app_version`
 - `device_name`, `android_version`（任意）
@@ -169,6 +169,6 @@ apps 1 ── * test_runs
 test_runs 1 ── * test_results
 test_cases 1 ── * test_results
 test_results 1 ── * attachments
-test_cases 1 ── * edit_history
-test_results 1 ── * edit_history
+test_cases 0..1 ── * edit_history   （test_case_id と test_result_id のどちらか一方だけを設定）
+test_results 0..1 ── * edit_history
 ```

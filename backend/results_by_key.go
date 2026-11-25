@@ -2,8 +2,6 @@ package main
 
 import (
 	"errors"
-	"net/url"
-	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/labstack/echo/v4"
@@ -25,17 +23,9 @@ func (s *server) resultIDByKey(c echo.Context) (int64, error) {
 		return 0, err
 	}
 	// Keys are stored exactly as entered, so surrounding whitespace is significant and is not trimmed.
-	// Echo matches on RawPath when the URL contains escapes such as %2F; only then is the value still encoded.
-	key := c.Param("case_key")
-	if c.Request().URL.RawPath != "" {
-		decoded, e := url.PathUnescape(key)
-		if e != nil {
-			return 0, echo.NewHTTPError(400, "ケースの識別子のURLエンコードが不正です")
-		}
-		key = decoded
-	}
-	if strings.TrimSpace(key) == "" {
-		return 0, echo.NewHTTPError(400, "ケースの識別子を指定してください")
+	key, err := caseKeyParam(c)
+	if err != nil {
+		return 0, err
 	}
 	ctx := c.Request().Context()
 	var found bool

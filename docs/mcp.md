@@ -38,13 +38,22 @@ go build -o ../.local/bin/ledger-mcp .
 `go run /path/to/mcp` のようにパスだけを渡すと、起動したプロジェクトのモジュールとして解釈されて失敗するため、
 `-C` で MCP モジュールのディレクトリに移動してから実行します。
 
+`-C` はサーバーの作業ディレクトリも `mcp/` に変えます。そのため、`LEDGER_ATTACHMENT_DIRS` を省略すると
+添付を許可する範囲が `mcp/` と一時ディレクトリになり、テスト対象プロジェクトのファイルを添付できません。
+`go run` で起動するときは、対象プロジェクトの添付ディレクトリを絶対パスで `LEDGER_ATTACHMENT_DIRS` に指定してください。
+また、添付の `path` の相対パスも `mcp/` を起点に解決されるため、`/path/to/your-app/.artifacts/login.png` のように
+対象プロジェクト内の絶対パスで渡してください。
+
 ```json
 {
   "mcpServers": {
     "test-report-portal": {
       "command": "go",
       "args": ["-C", "/path/to/TestReportPortal/mcp", "run", "."],
-      "env": { "LEDGER_URL": "http://127.0.0.1:3000" }
+      "env": {
+        "LEDGER_URL": "http://127.0.0.1:3000",
+        "LEDGER_ATTACHMENT_DIRS": "/path/to/your-app/.artifacts:/tmp"
+      }
     }
   }
 }
@@ -75,6 +84,7 @@ go build -o ../.local/bin/ledger-mcp .
 - `status` は `passed` / `failed` / `blocked` / `not_run`。
 - `record_result` の `actual_result` / `comment` は省略すると現状維持です。
 - 添付は画像（PNG/JPEG/WebP）、`.txt` / `.log`、`.json`、`.xml`、`.zip`、`.mp4`。形式・サイズの最終判定はポータルが行います。
+- `record_result` 1回で添付できるのは1ファイル100MBまで、合計200MBまでです。超える場合は複数回に分けて記録します（どれか1つでも超えると結果も更新しません）。
 
 ## 典型的な流れ
 
@@ -88,6 +98,9 @@ record_result(run_id=42, case_key="LOGIN-001", status="failed", actual_result="�
 record_result(run_id=42, case_key="LOGOUT-001", status="passed")
 finish_run(run_id=42)
 ```
+
+相対パスはMCPサーバーの作業ディレクトリが起点です。`go run -C ...` で起動している場合は、
+`/path/to/your-app/.artifacts/login.png` のように絶対パスで指定してください。
 
 ## リトライと重複防止
 

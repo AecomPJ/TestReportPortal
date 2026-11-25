@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,6 +21,10 @@ import (
 
 // maxUploadBytes mirrors the portal's largest per-file limit (MP4). The portal enforces per-type limits.
 const maxUploadBytes = 100 * 1024 * 1024
+
+// maxRecordBytes caps the attachments held in memory by one record_result call, since all files are
+// read and validated before the result is written.
+const maxRecordBytes = 200 * 1024 * 1024
 
 type config struct {
 	ledgerURL      string
@@ -170,41 +175,75 @@ func (t *tools) caseByKey(ctx context.Context, appID int64, key string) (testCas
 	return c, err
 }
 
-// checkAttachmentPath only allows regular files inside the configured directories, so that an agent
-// cannot upload arbitrary local files (keys, credentials) to the portal.
-func (t *tools) checkAttachmentPath(p string) (string, error) {
+// readAttachment only reads regular files inside the configured directories, so that an agent
+// cannot upload arbitrary local files (keys, credentials) to the portal. The file is opened through
+// os.Root and checked and read from that same handle: swapping the path for a symlink that points
+// outside the directory after the check cannot redirect the read.
+func (t *tools) readAttachment(p string, budget int64) (string, []byte, error) {
 	if !filepath.IsAbs(p) {
 		wd, err := os.Getwd()
 		if err != nil {
-			return "", err
+			return "", nil, err
 		}
 		p = filepath.Join(wd, p)
 	}
+	// Resolving symlinks here only locates the file; containment is enforced by os.Root below.
 	real, err := filepath.EvalSymlinks(p)
 	if err != nil {
-		return "", fmt.Errorf("添付ファイル %s を読めません: %v", p, err)
-	}
-	info, err := os.Stat(real)
-	if err != nil {
-		return "", err
-	}
-	if !info.Mode().IsRegular() {
-		return "", fmt.Errorf("添付 %s は通常のファイルではありません", p)
-	}
-	if info.Size() == 0 {
-		return "", fmt.Errorf("添付ファイル %s は空です", p)
-	}
-	if info.Size() > maxUploadBytes {
-		return "", fmt.Errorf("添付ファイル %s は100MBを超えています", p)
+		return "", nil, fmt.Errorf("添付ファイル %s を読めません: %v", p, err)
 	}
 	for _, dir := range t.cfg.attachmentDirs {
 		rel, err := filepath.Rel(dir, real)
-		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return real, nil
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			continue
 		}
+		data, err := readInRoot(dir, rel, p, budget)
+		if err != nil {
+			return "", nil, err
+		}
+		return real, data, nil
 	}
-	return "", fmt.Errorf("添付ファイル %s は許可されたディレクトリ（%s）の外にあります。LEDGER_ATTACHMENT_DIRS で許可するディレクトリを設定してください",
+	return "", nil, fmt.Errorf("添付ファイル %s は許可されたディレクトリ（%s）の外にあります。LEDGER_ATTACHMENT_DIRS で許可するディレクトリを設定してください",
 		p, strings.Join(t.cfg.attachmentDirs, ", "))
+}
+
+func readInRoot(dir, rel, shown string, budget int64) ([]byte, error) {
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	f, err := root.Open(rel)
+	if err != nil {
+		return nil, fmt.Errorf("添付ファイル %s を読めません: %v", shown, err)
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("添付 %s は通常のファイルではありません", shown)
+	}
+	if info.Size() == 0 {
+		return nil, fmt.Errorf("添付ファイル %s は空です", shown)
+	}
+	if info.Size() > maxUploadBytes {
+		return nil, fmt.Errorf("添付ファイル %s は100MBを超えています", shown)
+	}
+	if info.Size() > budget {
+		return nil, fmt.Errorf("1回の record_result で添付できるのは合計%dMBまでです（%s で超過）。複数回に分けて記録してください", maxRecordBytes/1024/1024, shown)
+	}
+	// Read at most one byte past the limits in case the file grows after Stat.
+	limit := min(int64(maxUploadBytes), budget)
+	data, err := io.ReadAll(io.LimitReader(f, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > limit {
+		return nil, fmt.Errorf("添付ファイル %s が読み込み中に上限を超えました", shown)
+	}
+	return data, nil
 }
 
 // ---- tool inputs -----------------------------------------------------------
@@ -339,7 +378,7 @@ func (t *tools) upsertCase(ctx context.Context, _ *mcp.CallToolRequest, in upser
 		body["is_active"] = *in.IsActive
 	}
 	var c testCase
-	if err = t.api.send(ctx, http.MethodPut, fmt.Sprintf("/apps/%d/cases/by-key/%s", a.ID, esc(strings.TrimSpace(in.CaseKey))), body, "", &c); err != nil {
+	if err = t.api.send(ctx, http.MethodPut, fmt.Sprintf("/apps/%d/cases/by-key/%s", a.ID, esc(in.CaseKey)), body, "", &c); err != nil {
 		return nil, nil, err
 	}
 	return jsonResult(c)
@@ -370,7 +409,10 @@ func (t *tools) startRun(ctx context.Context, _ *mcp.CallToolRequest, in startRu
 	seen := map[string]bool{}
 	ids := make([]int64, 0, len(in.CaseKeys))
 	for _, k := range in.CaseKeys {
-		k = strings.TrimSpace(k)
+		// Keys are matched exactly as stored by the portal, surrounding whitespace included.
+		if err := required("case_keys[]", k); err != nil {
+			return nil, nil, err
+		}
 		if seen[k] {
 			return nil, nil, fmt.Errorf("case_keys に %q が重複しています", k)
 		}
@@ -421,21 +463,19 @@ func (t *tools) recordResult(ctx context.Context, _ *mcp.CallToolRequest, in rec
 		data                []byte
 	}
 	files := make([]file, 0, len(in.Attachments))
+	budget := int64(maxRecordBytes)
 	for _, a := range in.Attachments {
 		if err := required("attachments[].path", a.Path); err != nil {
 			return nil, nil, err
 		}
-		p, err := t.checkAttachmentPath(a.Path)
+		p, data, err := t.readAttachment(a.Path, budget)
 		if err != nil {
 			return nil, nil, err
 		}
-		data, err := os.ReadFile(p)
-		if err != nil {
-			return nil, nil, err
-		}
+		budget -= int64(len(data))
 		files = append(files, file{path: a.Path, name: filepath.Base(p), caption: a.Caption, data: data})
 	}
-	base := fmt.Sprintf("/runs/%d/results/by-key/%s", in.RunID, esc(strings.TrimSpace(in.CaseKey)))
+	base := fmt.Sprintf("/runs/%d/results/by-key/%s", in.RunID, esc(in.CaseKey))
 	body := map[string]any{"status": in.Status, "changed_by": t.cfg.actor, "reason": in.Reason}
 	if in.ActualResult != nil {
 		body["actual_result"] = *in.ActualResult
@@ -545,7 +585,7 @@ func (t *tools) getCaseHistory(ctx context.Context, _ *mcp.CallToolRequest, in c
 	if err != nil {
 		return nil, nil, err
 	}
-	c, err := t.caseByKey(ctx, a.ID, strings.TrimSpace(in.CaseKey))
+	c, err := t.caseByKey(ctx, a.ID, in.CaseKey)
 	if err != nil {
 		return nil, nil, err
 	}

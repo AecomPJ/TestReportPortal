@@ -69,6 +69,11 @@ func classifyAttachment(name string, data []byte) (string, string, error) {
 		k = kindXML
 	case textual && (ext == ".txt" || ext == ".log"):
 		k = kindText
+		// Keep the charset the sniffer detected (e.g. UTF-16 with a BOM): the bytes are stored as-is,
+		// so the served Content-Type must describe them. Other text sniffs such as text/html stay text/plain.
+		if strings.HasPrefix(sniffed, "text/plain;") {
+			k.mime = sniffed
+		}
 	default:
 		return "", "", echo.NewHTTPError(400, unsupportedAttachment)
 	}
