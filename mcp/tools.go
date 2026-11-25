@@ -213,7 +213,9 @@ func readInRoot(dir, rel, shown string, budget int64) ([]byte, error) {
 		return nil, err
 	}
 	defer root.Close()
-	f, err := root.Open(rel)
+	// Non-blocking so that a FIFO without a writer fails the regular-file check below instead of
+	// hanging the call; regular files read normally with this flag.
+	f, err := root.OpenFile(rel, os.O_RDONLY|openNonBlock, 0)
 	if err != nil {
 		return nil, fmt.Errorf("添付ファイル %s を読めません: %v", shown, err)
 	}
@@ -493,7 +495,9 @@ func (t *tools) recordResult(ctx context.Context, _ *mcp.CallToolRequest, in rec
 		content := sha256.Sum256(f.data)
 		key := headerKey("result-file", fmt.Sprint(in.RunID), in.CaseKey, f.name, f.caption, hex.EncodeToString(content[:]))
 		var a attachment
-		err := t.api.upload(ctx, base+"/attachments", f.name, f.data, map[string]string{"caption": f.caption, "uploaded_by": t.cfg.actor}, key, &a)
+		// Upload to the result the PATCH updated, not by case_key again, so the files cannot land on another
+		// result if the key is reassigned in between.
+		err := t.api.upload(ctx, fmt.Sprintf("/results/%d/attachments", result.ID), f.name, f.data, map[string]string{"caption": f.caption, "uploaded_by": t.cfg.actor}, key, &a)
 		if err != nil {
 			return nil, nil, fmt.Errorf("結果(status=%s)は記録済みですが、添付 %s のアップロードに失敗しました。同じ引数で record_result を再実行すると未添付分のみ追加されます: %w", in.Status, f.path, err)
 		}
